@@ -1,4 +1,4 @@
-aiohttp==3.8.1; python_version >= "3.6"
+aiohttp==3.8.5; python_version >= "3.6"
 aiosignal==1.2.0; python_version >= "3.6"
 alabaster==0.7.12; python_version >= "3.7"
 alpha-vantage==2.3.1
