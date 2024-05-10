@@ -1,115 +1,121 @@
 """Ethplorer view"""
+
 __docformat__ = "numpy"
 
 import logging
 import os
+from typing import Optional
 
 from openbb_terminal.cryptocurrency.dataframe_helpers import (
     lambda_very_long_number_formatter,
 )
 from openbb_terminal.cryptocurrency.onchain import ethplorer_model
-from openbb_terminal.decorators import check_api_key
-from openbb_terminal.decorators import log_start_end
+from openbb_terminal.decorators import check_api_key, log_start_end
 from openbb_terminal.helper_funcs import export_data, print_rich_table
 from openbb_terminal.rich_config import console
 
 logger = logging.getLogger(__name__)
+# pylint: disable=unsupported-assignment-operation
 
 
 @log_start_end(log=logger)
 @check_api_key(["API_ETHPLORER_KEY"])
 def display_address_info(
     address: str,
-    top: int = 15,
+    limit: int = 15,
     sortby: str = "index",
-    descend: bool = True,
+    ascend: bool = False,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ) -> None:
-    """Display info about tokens for given ethereum blockchain balance e.g. ETH balance, balance of all tokens with
-    name and symbol. [Source: Ethplorer]
+    """Display info about tokens for given ethereum blockchain balance e.g. ETH balance,
+    balance of all tokens with name and symbol. [Source: Ethplorer]
 
     Parameters
     ----------
     address: str
         Ethereum balance.
-    top: int
+    limit: int
         Limit of transactions. Maximum 100
     sortby: str
         Key to sort by.
-    descend: str
+    ascend: str
         Sort in descending order.
     export : str
         Export dataframe data to csv,json,xlsx file
     """
 
-    df = ethplorer_model.get_address_info(address)
+    df = ethplorer_model.get_address_info(address, sortby=sortby, ascend=ascend)
     df_data = df.copy()
-    df = df.sort_values(by=sortby, ascending=descend)
     df["balance"] = df["balance"].apply(
-        lambda x: lambda_very_long_number_formatter(x)
-        if x >= 10000
-        else round(float(x), 4)
+        lambda x: (
+            lambda_very_long_number_formatter(x) if x >= 10000 else round(float(x), 4)
+        )
     )
 
     print_rich_table(
-        df.head(top),
+        df,
         headers=list(df.columns),
         show_index=False,
         title="Blockchain Token Information",
+        export=bool(export),
+        limit=limit,
     )
-    console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "balance",
         df_data,
+        sheet_name,
     )
 
 
 @log_start_end(log=logger)
 @check_api_key(["API_ETHPLORER_KEY"])
 def display_top_tokens(
-    top: int = 15,
+    limit: int = 15,
     sortby: str = "rank",
-    descend: bool = True,
+    ascend: bool = True,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ) -> None:
     """Display top ERC20 tokens [Source: Ethplorer]
 
     Parameters
     ----------
-    top: int
+    limit: int
         Limit of transactions. Maximum 100
     sortby: str
         Key to sort by.
-    descend: str
+    ascend: str
         Sort in descending order.
     export : str
         Export dataframe data to csv,json,xlsx file
     """
 
-    df = ethplorer_model.get_top_tokens()
+    df = ethplorer_model.get_top_tokens(sortby, ascend)
     df_data = df.copy()
     df.fillna("", inplace=True)
-    df = df.sort_values(by=sortby, ascending=descend)
     for col in ["txsCount", "transfersCount", "holdersCount"]:
         if col in df.columns:
             df[col] = df[col].apply(lambda x: lambda_very_long_number_formatter(x))
 
     print_rich_table(
-        df.head(top),
+        df,
         headers=list(df.columns),
         show_index=False,
         title="Top ERC20 Tokens",
+        export=bool(export),
+        limit=limit,
     )
-    console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "top",
         df_data,
+        sheet_name,
     )
 
 
@@ -117,10 +123,11 @@ def display_top_tokens(
 @check_api_key(["API_ETHPLORER_KEY"])
 def display_top_token_holders(
     address: str,
-    top: int = 10,
+    limit: int = 10,
     sortby: str = "balance",
-    descend: bool = False,
+    ascend: bool = True,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ) -> None:
     """Display info about top ERC20 token holders. [Source: Ethplorer]
 
@@ -128,34 +135,35 @@ def display_top_token_holders(
     ----------
     address: str
         Token balance e.g. 0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984
-    top: int
+    limit: int
         Limit of transactions. Maximum 100
     sortby: str
         Key to sort by.
-    descend: str
+    ascend: str
         Sort in descending order.
     export : str
         Export dataframe data to csv,json,xlsx file
     """
 
-    df = ethplorer_model.get_top_token_holders(address)
+    df = ethplorer_model.get_top_token_holders(address, sortby, ascend)
     df_data = df.copy()
-    df = df.sort_values(by=sortby, ascending=descend)
     df["balance"] = df["balance"].apply(lambda x: lambda_very_long_number_formatter(x))
 
     print_rich_table(
-        df.head(top),
+        df,
         headers=list(df.columns),
         show_index=False,
         title="ERC20 Token Holder Info",
+        export=bool(export),
+        limit=limit,
     )
-    console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "holders",
         df_data,
+        sheet_name,
     )
 
 
@@ -163,10 +171,11 @@ def display_top_token_holders(
 @check_api_key(["API_ETHPLORER_KEY"])
 def display_address_history(
     address: str,
-    top: int = 10,
+    limit: int = 10,
     sortby: str = "timestamp",
-    descend: bool = False,
+    ascend: bool = True,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ) -> None:
     """Display information about balance historical transactions. [Source: Ethplorer]
 
@@ -174,38 +183,39 @@ def display_address_history(
     ----------
     address: str
         Ethereum blockchain balance e.g. 0x3cD751E6b0078Be393132286c442345e5DC49699
-    top: int
+    limit: int
         Limit of transactions. Maximum 100
     sortby: str
         Key to sort by.
-    descend: str
-        Sort in descending order.
+    ascend: str
+        Sort in ascending order.
     export : str
         Export dataframe data to csv,json,xlsx file
     """
 
-    df = ethplorer_model.get_address_history(address)
+    df = ethplorer_model.get_address_history(address, sortby, ascend)
     df_data = df.copy()
-    df = df.sort_values(by=sortby, ascending=descend)
     df["value"] = df["value"].apply(
-        lambda x: lambda_very_long_number_formatter(x)
-        if x >= 10000
-        else round(float(x), 4)
+        lambda x: (
+            lambda_very_long_number_formatter(x) if x >= 10000 else round(float(x), 4)
+        )
     )
 
     print_rich_table(
-        df.head(top),
+        df,
         headers=list(df.columns),
         show_index=False,
         title="Historical Transactions Information",
+        export=bool(export),
+        limit=limit,
     )
-    console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "hist",
         df_data,
+        sheet_name,
     )
 
 
@@ -215,6 +225,7 @@ def display_token_info(
     address: str,
     social: bool = False,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ) -> None:
     """Display info about ERC20 token. [Source: Ethplorer]
 
@@ -230,24 +241,31 @@ def display_token_info(
 
     df = ethplorer_model.get_token_info(address)
     df_data = df.copy()
-    df["Value"] = df["Value"].apply(lambda x: lambda_very_long_number_formatter(x))
+    df.loc[:, "Value"] = df["Value"].apply(
+        lambda x: lambda_very_long_number_formatter(x)
+    )
 
     socials = ["website", "telegram", "reddit", "twitter", "coingecko"]
-    if social:
-        df = df[df["Metric"].isin(["balance", "name", "symbol"] + socials)]
-    else:
-        df = df[~df["Metric"].isin(socials)]
+    df = (
+        df[df["Metric"].isin(["balance", "name", "symbol"] + socials)]
+        if social
+        else df[~df["Metric"].isin(socials)]
+    )
 
     print_rich_table(
-        df, headers=list(df.columns), show_index=False, title="ERC20 Token Information"
+        df,
+        headers=list(df.columns),
+        show_index=False,
+        title="ERC20 Token Information",
+        export=bool(export),
     )
-    console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "info",
         df_data,
+        sheet_name,
     )
 
 
@@ -256,6 +274,7 @@ def display_token_info(
 def display_tx_info(
     tx_hash: str,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ) -> None:
     """Display info about transaction. [Source: Ethplorer]
 
@@ -268,20 +287,20 @@ def display_tx_info(
     """
 
     df = ethplorer_model.get_tx_info(tx_hash)
-    df_data = df.copy()
     print_rich_table(
         df,
         headers=list(df.columns),
         show_index=False,
         title="Information About Transactions",
+        export=bool(export),
     )
-    console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "tx",
-        df_data,
+        df,
+        sheet_name,
     )
 
 
@@ -289,11 +308,12 @@ def display_tx_info(
 @check_api_key(["API_ETHPLORER_KEY"])
 def display_token_history(
     address: str,
-    top: int = 10,
+    limit: int = 10,
     sortby: str = "timestamp",
+    ascend: bool = False,
     hash_: bool = False,
-    descend: bool = False,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ) -> None:
     """Display info about token history. [Source: Ethplorer]
 
@@ -301,11 +321,11 @@ def display_token_history(
     ----------
     address: str
         Token balance e.g. 0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984
-    top: int
+    limit: int
         Limit of transactions. Maximum 100
     sortby: str
         Key to sort by.
-    descend: str
+    ascend: str
         Sort in descending order.
     hash_: bool,
         Flag to show transaction hash.
@@ -313,14 +333,15 @@ def display_token_history(
         Export dataframe data to csv,json,xlsx file
     """
 
-    df = ethplorer_model.get_token_history(address)
+    df = ethplorer_model.get_token_history(address, sortby, ascend)
     df_data = df.copy()
     if df.empty:
         console.print(f"No results found for balance: {address}\n")
         return
 
-    df["value"] = df["value"].apply(lambda x: lambda_very_long_number_formatter(x))
-    df = df.sort_values(by=sortby, ascending=descend)
+    df.loc[:, "value"] = df["value"].apply(
+        lambda x: lambda_very_long_number_formatter(x)
+    )
 
     if hash_:
         df.drop(["from", "to"], axis=1, inplace=True)
@@ -328,18 +349,20 @@ def display_token_history(
         df.drop("transactionHash", inplace=True, axis=1)
 
     print_rich_table(
-        df.head(top),
+        df,
         headers=list(df.columns),
         show_index=False,
         title="Token History Information",
+        export=bool(export),
+        limit=limit,
     )
-    console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "th",
         df_data,
+        sheet_name,
     )
 
 
@@ -347,28 +370,30 @@ def display_token_history(
 @check_api_key(["API_ETHPLORER_KEY"])
 def display_token_historical_prices(
     address: str,
-    top: int = 30,
+    limit: int = 30,
     sortby: str = "date",
-    descend: bool = False,
+    ascend: bool = False,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ) -> None:
-    """Display token historical prices with volume and market cap, and average price. [Source: Ethplorer]
+    """Display token historical prices with volume and market cap, and average price.
+    [Source: Ethplorer]
 
     Parameters
     ----------
     address: str
         Token balance e.g. 0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984
-    top: int
+    limit: int
         Limit of transactions. Maximum 100
     sortby: str
         Key to sort by.
-    descend: str
+    ascend: str
         Sort in descending order.
     export : str
         Export dataframe data to csv,json,xlsx file
     """
 
-    df = ethplorer_model.get_token_historical_price(address)
+    df = ethplorer_model.get_token_historical_price(address, sortby, ascend)
     df_data = df.copy()
 
     if df.empty:
@@ -378,20 +403,21 @@ def display_token_historical_prices(
     df["volumeConverted"] = df["volumeConverted"].apply(
         lambda x: lambda_very_long_number_formatter(x)
     )
-    df["cap"] = df["cap"].apply(lambda x: lambda_very_long_number_formatter(x))
-    df = df.sort_values(by=sortby, ascending=descend)
+    df.loc[:, "cap"] = df["cap"].apply(lambda x: lambda_very_long_number_formatter(x))
 
     print_rich_table(
-        df.head(top),
+        df,
         headers=list(df.columns),
         show_index=False,
         title="Historical Token Prices",
+        export=bool(export),
+        limit=limit,
     )
-    console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "prices",
         df_data,
+        sheet_name,
     )

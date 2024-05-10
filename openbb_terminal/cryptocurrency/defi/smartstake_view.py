@@ -1,42 +1,32 @@
 """SentimentInvestor View"""
+
 __docformat__ = "numpy"
 
-import os
 import logging
-from typing import Optional, List
+import os
+from typing import Optional, Union
 
-from matplotlib import pyplot as plt
-
-from openbb_terminal.decorators import check_api_key
+from openbb_terminal import OpenBBFigure
 from openbb_terminal.cryptocurrency.defi import smartstake_model
-from openbb_terminal.helper_funcs import (
-    export_data,
-    plot_autoscale,
-    print_rich_table,
-)
-from openbb_terminal.config_terminal import theme
-from openbb_terminal.config_plot import PLOT_DPI
-from openbb_terminal.rich_config import console
-from openbb_terminal.decorators import log_start_end
-
+from openbb_terminal.decorators import check_api_key, log_start_end
+from openbb_terminal.helper_funcs import export_data, print_rich_table
 
 # pylint: disable=E1101
 
 logger = logging.getLogger(__name__)
 
-LUNA_CIR_SUPPLY_CHANGE = "lunaSupplyChallengeStats"
-
 
 @log_start_end(log=logger)
 @check_api_key(["API_SMARTSTAKE_KEY", "API_SMARTSTAKE_TOKEN"])
 def display_luna_circ_supply_change(
-    days: int,
-    export: str,
-    supply_type: str = LUNA_CIR_SUPPLY_CHANGE,
+    days: int = 30,
+    export: str = "",
+    sheet_name: Optional[str] = None,
+    supply_type: str = "lunaSupplyChallengeStats",
     limit: int = 5,
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Display Luna circulating supply stats
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots and prints table showing Luna circulating supply stats
 
     Parameters
     ----------
@@ -44,66 +34,53 @@ def display_luna_circ_supply_change(
         Number of days
     supply_type: str
         Supply type to unpack json
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
     export: str
         Export type
     limit: int
         Number of results display on the terminal
         Default: 5
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (1 axis is expected in the list), by default None
-    Returns
-        None
-    -------
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
 
     df = smartstake_model.get_luna_supply_stats(supply_type, days)
 
     if df.empty:
-        return
+        return None
 
-    # This plot has 1 axis
-    if not external_axes:
-        _, ax = plt.subplots(figsize=plot_autoscale(), dpi=PLOT_DPI)
-    else:
-        if len(external_axes) != 1:
-            logger.error("Expected list of one axis item.")
-            console.print("[red]Expected list of one axis item./n[/red]")
-            return
-        (ax,) = external_axes
+    fig = OpenBBFigure(xaxis_title="Time", yaxis_title="Luna Circulating Supply [M]")
+    fig.set_title("Luna Circulating Supply Changes (In Millions)")
 
-    ax.plot(
-        df.index,
-        df["circulatingSupplyInMil"],
-        c="black",
-        label="Circulating Supply",
+    fig.add_scatter(
+        x=df.index,
+        y=df["circulatingSupplyInMil"],
+        mode="lines",
+        name="Circulating Supply",
+        line=dict(color="black"),
     )
-    ax.plot(
-        df.index,
-        df["liquidCircSupplyInMil"],
-        c="red",
-        label="Liquid Circulating Supply",
+    fig.add_scatter(
+        x=df.index,
+        y=df["liquidCircSupplyInMil"],
+        mode="lines",
+        name="Liquid Circulating Supply",
+        line=dict(color="red"),
     )
-    ax.plot(
-        df.index, df["stakeFromCircSupplyInMil"], c="green", label="Stake of Supply"
+    fig.add_scatter(
+        x=df.index,
+        y=df["stakeFromCircSupplyInMil"],
+        mode="lines",
+        name="Stake of Supply",
+        line=dict(color="green"),
     )
-    ax.plot(
-        df.index,
-        df["recentTotalLunaBurntInMil"],
-        c="blue",
-        label="Supply Reduction (Luna Burnt)",
+    fig.add_scatter(
+        x=df.index,
+        y=df["recentTotalLunaBurntInMil"],
+        mode="lines",
+        name="Supply Reduction (Luna Burnt)",
+        line=dict(color="blue"),
     )
-
-    ax.grid()
-    ax.set_ylabel("Millions")
-    ax.set_xlabel("Time")
-    ax.set_title("Luna Circulating Supply Changes (In Millions)")
-    ax.set_xlim(df.index[0], df.index[-1])
-    ax.legend(loc="best")
-
-    theme.style_primary_axis(ax)
-
-    if external_axes is None:
-        theme.visualize_output()
 
     RAW_COLS = [
         "circulatingSupplyInMil",
@@ -117,13 +94,15 @@ def display_luna_circ_supply_change(
         os.path.dirname(os.path.abspath(__file__)),
         "lcsc",
         df[RAW_COLS],
+        sheet_name,
+        fig,
     )
 
     df.index = df.index.strftime("%Y-%m-%d")
     df = df.sort_index(ascending=False)
 
     print_rich_table(
-        df[RAW_COLS].head(limit),
+        df[RAW_COLS],
         headers=[
             "Circ Supply",
             "Liquid Circ Supply",
@@ -133,4 +112,8 @@ def display_luna_circ_supply_change(
         show_index=True,
         index_name="Time",
         title="Luna Circulating Supply Changes (in Millions)",
+        export=bool(export),
+        limit=limit,
     )
+
+    return fig.show(external=external_axes)

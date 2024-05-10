@@ -1,49 +1,46 @@
 """Regression View"""
+
 __docformat__ = "numpy"
 
-from typing import Optional, List, Tuple, Dict, Any
-import os
 import logging
-import pandas as pd
-from matplotlib import pyplot as plt
+import os
+from typing import Optional
 
-from openbb_terminal.config_plot import PLOT_DPI
+import pandas as pd
+import statsmodels
+
+from openbb_terminal import OpenBBFigure
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_funcs import plot_autoscale, export_data
-from openbb_terminal.rich_config import console
 from openbb_terminal.econometrics import regression_model
-from openbb_terminal.helper_funcs import (
-    print_rich_table,
-)
-from openbb_terminal.config_terminal import theme
+from openbb_terminal.helper_funcs import export_data, print_rich_table
+from openbb_terminal.rich_config import console
 
 logger = logging.getLogger(__name__)
 
 
 @log_start_end(log=logger)
 def display_panel(
-    regression_type: str,
-    regression_variables: List[Tuple],
-    data: Dict[str, pd.DataFrame],
-    datasets: Dict[pd.DataFrame, Any],
+    Y: pd.DataFrame,
+    X: pd.DataFrame,
+    regression_type: str = "OLS",
     entity_effects: bool = False,
     time_effects: bool = False,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ):
     """Based on the regression type, this function decides what regression to run.
 
     Parameters
     ----------
-    regression_type: str
-        The type of regression you wish to execute.
+    data : dict
+        A dictionary containing the datasets.
     regression_variables : list
         The regressions variables entered where the first variable is
         the dependent variable.
-    data : dict
-        A dictionary containing the datasets.
-    datasets: dict
-        A dictionary containing the column and dataset names of
         each column/dataset combination.
+    regression_type: str
+        The type of regression you wish to execute. Choose from:
+        OLS, POLS, RE, BOLS, FE
     entity_effects: bool
         Whether to apply Fixed Effects on entities.
     time_effects: bool
@@ -56,176 +53,182 @@ def display_panel(
     The dataset used, the dependent variable, the independent variable and
     the regression model.
     """
-    (
-        regression_df,
-        dependent,
-        independent,
-        model,
-    ) = regression_model.get_regressions_results(
+    model = regression_model.get_regressions_results(
+        Y,
+        X,
         regression_type,
-        regression_variables,
-        data,
-        datasets,
         entity_effects,
         time_effects,
     )
+    if regression_type != "OLS":
+        console.print(model)
 
     if export:
         results_as_html = model.summary.tables[1].as_html()
         df = pd.read_html(results_as_html, header=0, index_col=0)[0]
-
+        dependent = Y.columns[0]
         export_data(
             export,
             os.path.dirname(os.path.abspath(__file__)),
             f"{dependent}_{regression_type}_regression",
             df,
+            sheet_name,
         )
 
-    return regression_df, dependent, independent, model
+    return model
 
 
 @log_start_end(log=logger)
 def display_dwat(
+    model: statsmodels.regression.linear_model.RegressionResultsWrapper,
     dependent_variable: pd.Series,
-    residual: pd.DataFrame,
-    plot: bool = False,
+    plot: bool = True,
     export: str = "",
-    external_axes: Optional[List[plt.axes]] = None,
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
 ):
     """Show Durbin-Watson autocorrelation tests
 
     Parameters
     ----------
+    model : OLS Model
+        A fit statsmodels OLS model.
     dependent_variable : pd.Series
-        The dependent variable.
-    residual : OLS Model
-        The residual of an OLS model.
+        The dependent variable for plotting
     plot : bool
         Whether to plot the residuals
     export : str
         Format to export data
-    external_axes: Optional[List[plt.axes]]
-        External axes to plot on
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
-    autocorrelation = regression_model.get_dwat(residual)
+    fig = OpenBBFigure(
+        yaxis_title="Residual", xaxis_title=dependent_variable.name.capitalize()
+    )
+    autocorr = regression_model.get_dwat(model)
 
-    if 1.5 < autocorrelation < 2.5:
+    if 1.5 < autocorr < 2.5:
         console.print(
-            f"The result {autocorrelation} is within the range 1.5 and 2.5 which therefore indicates "
+            f"The result {autocorr} is within the range 1.5 and 2.5 which therefore indicates "
             f"autocorrelation not to be problematic."
         )
     else:
         console.print(
-            f"The result {autocorrelation} is outside the range 1.5 and 2.5 and therefore autocorrelation "
-            f"can be problematic. Please consider lags of the dependent or independent variable."
+            f"The result {autocorr} is outside the range 1.5 and 2.5 and could "
+            f"be problematic. Please consider lags of the dependent or independent variable."
         )
 
-    if plot:
-        if external_axes is None:
-            _, ax = plt.subplots(figsize=plot_autoscale(), dpi=PLOT_DPI)
-        else:
-            ax = external_axes[0]
+    if not fig.is_image_export(export):
+        export_data(
+            export,
+            os.path.dirname(os.path.abspath(__file__)),
+            f"{dependent_variable.name}_dwat",
+            autocorr,
+            sheet_name,
+        )
 
-        ax.scatter(dependent_variable, residual)
-        ax.axhline(y=0, color="r", linestyle="-")
-        ax.set_ylabel("Residual")
-        ax.set_xlabel(dependent_variable.name.capitalize())
-        ax.set_title("Plot of Residuals")
-        theme.style_primary_axis(ax)
+    if plot or fig.is_image_export(export):
+        fig.set_title("Plot of Residuals")
 
-        if external_axes is None:
-            theme.visualize_output()
+        fig.add_scatter(
+            x=dependent_variable,
+            y=model.resid,
+            mode="markers",
+        )
+        fig.add_hline(y=0, line=dict(color="red", dash="dash"))
 
-    export_data(
-        export,
-        os.path.dirname(os.path.abspath(__file__)),
-        f"{dependent_variable.name}_dwat",
-        autocorrelation,
-    )
+        if fig.is_image_export(export):
+            export_data(
+                export,
+                os.path.dirname(os.path.abspath(__file__)),
+                f"{dependent_variable.name}_residuals",
+                dependent_variable,
+                sheet_name,
+                fig,
+            )
 
-    console.print()
+        return fig.show(external=external_axes)
+
+    return None
 
 
 @log_start_end(log=logger)
-def display_bgod(model: pd.DataFrame, lags: int, export: str = ""):
+def display_bgod(
+    model: statsmodels.regression.linear_model.RegressionResultsWrapper,
+    lags: int = 3,
+    export: str = "",
+    sheet_name: Optional[str] = None,
+):
     """Show Breusch-Godfrey autocorrelation test
 
     Parameters
     ----------
     model : OLS Model
-        Model containing residual values.
+        OLS model that has been fit.
     lags : int
         The amount of lags included.
     export : str
         Format to export data
     """
-    (
-        lm_stat,
-        p_value,
-        f_stat,
-        fp_value,
-    ) = regression_model.get_bgod(model, lags)
-
-    df = pd.DataFrame(
-        [lm_stat, p_value, f_stat, fp_value],
-        index=["LM-stat", "p-value", "f-stat", "fp-value"],
-    )
+    df = regression_model.get_bgod(model, lags)
 
     print_rich_table(
         df,
         headers=list(["Breusch-Godfrey"]),
         show_index=True,
         title=f"Breusch-Godfrey autocorrelation test [Lags: {lags}]",
+        export=bool(export),
     )
-
+    p_value = df.loc["p-value"][0]
     if p_value > 0.05:
         console.print(
-            f"The result {round(p_value, 2)} indicates the existence of autocorrelation. Consider re-estimating "
-            f"with clustered standard errors and applying the Random Effects or Fixed Effects model."
+            f"{round(p_value, 2)} indicates the autocorrelation. Consider re-estimating with "
+            "clustered standard errors and applying the Random Effects or Fixed Effects model."
         )
     else:
         console.print(
             f"The result {round(p_value, 2)} indicates no existence of autocorrelation."
         )
 
-    export_data(export, os.path.dirname(os.path.abspath(__file__)), "results_bgod", df)
+    export_data(
+        export,
+        os.path.dirname(os.path.abspath(__file__)),
+        "results_bgod",
+        df,
+        sheet_name,
+    )
 
     console.print()
 
 
 @log_start_end(log=logger)
-def display_bpag(model: pd.DataFrame, export: str = ""):
+def display_bpag(
+    model: statsmodels.regression.linear_model.RegressionResultsWrapper,
+    export: str = "",
+    sheet_name: Optional[str] = None,
+):
     """Show Breusch-Pagan heteroscedasticity test
 
     Parameters
     ----------
     model : OLS Model
-        Model containing residual values.
+        OLS model that has been fit.
     export : str
         Format to export data
     """
-    (
-        lm_stat,
-        p_value,
-        f_stat,
-        fp_value,
-    ) = regression_model.get_bpag(model)
-
-    df = pd.DataFrame(
-        [lm_stat, p_value, f_stat, fp_value],
-        index=["lm-stat", "p-value", "f-stat", "fp-value"],
-    )
+    df = regression_model.get_bpag(model)
 
     print_rich_table(
         df,
         headers=list(["Breusch-Pagan"]),
         show_index=True,
         title="Breusch-Pagan heteroscedasticity test",
+        export=bool(export),
     )
-
+    p_value = df.loc["p-value"][0]
     if p_value > 0.05:
         console.print(
-            f"The result {round(p_value, 2)} indicates the existence of heteroscedasticity. Consider taking the log "
+            f"{round(p_value, 2)} indicates heteroscedasticity. Consider taking the log "
             f"or a rate for the dependent variable."
         )
     else:
@@ -233,6 +236,12 @@ def display_bpag(model: pd.DataFrame, export: str = ""):
             f"The result {round(p_value, 2)} indicates no existence of heteroscedasticity."
         )
 
-    export_data(export, os.path.dirname(os.path.abspath(__file__)), "results_bpag", df)
+    export_data(
+        export,
+        os.path.dirname(os.path.abspath(__file__)),
+        "results_bpag",
+        df,
+        sheet_name,
+    )
 
     console.print()

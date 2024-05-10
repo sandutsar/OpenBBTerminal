@@ -1,16 +1,16 @@
 """ Fidelity Model """
+
 __docformat__ = "numpy"
 
 import logging
 from typing import Tuple
 
 import pandas as pd
-import requests
 from bs4 import BeautifulSoup
 from pandas.core.frame import DataFrame
 
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_funcs import get_user_agent
+from openbb_terminal.helper_funcs import get_user_agent, request
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ def get_orders() -> Tuple[str, DataFrame]:
     -------
     Tuple[str, DataFrame]
         First value in the tuple is a Fidelity orders header
-        Fidelity orders Dataframe with the following columns:
+        Fidelity orders Dataframe with the following columns -
         Symbol, Buy / Sell Ratio, Price Change, Company, # Buy Orders, # Sell Orders
     """
     url_orders = (
@@ -31,7 +31,7 @@ def get_orders() -> Tuple[str, DataFrame]:
     )
 
     text_soup_url_orders = BeautifulSoup(
-        requests.get(url_orders, headers={"User-Agent": get_user_agent()}).text, "lxml"
+        request(url_orders, headers={"User-Agent": get_user_agent()}).text, "lxml"
     )
 
     l_orders = []

@@ -1,124 +1,120 @@
 """ Quandl View """
+
 __docformat__ = "numpy"
 
 import logging
 import os
-from typing import List, Optional
+from typing import Optional
 
-import matplotlib.ticker
 import pandas as pd
-from matplotlib import pyplot as plt
 
-from openbb_terminal.decorators import check_api_key
-from openbb_terminal.config_terminal import theme
-from openbb_terminal.decorators import log_start_end
-from openbb_terminal.config_plot import PLOT_DPI
+from openbb_terminal import OpenBBFigure, theme
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.decorators import check_api_key, log_start_end
 from openbb_terminal.helper_funcs import (
     export_data,
     lambda_long_number_format,
     print_rich_table,
-    plot_autoscale,
 )
-from openbb_terminal.rich_config import console
 from openbb_terminal.stocks.dark_pool_shorts import quandl_model
 
 logger = logging.getLogger(__name__)
 
 
 @log_start_end(log=logger)
+@check_api_key(["API_KEY_QUANDL"])
 def plot_short_interest(
-    ticker: str,
-    nyse: bool,
-    df_short_interest: pd.DataFrame,
-    external_axes: Optional[List[plt.Axes]] = None,
+    symbol: str,
+    data: pd.DataFrame,
+    nyse: bool = False,
+    external_axes: bool = False,
 ):
-    """Plots the short interest of a stock. This corresponds to the
+    """Plot the short interest of a stock. This corresponds to the
     number of shares that have been sold short but have not yet been
     covered or closed out. Either NASDAQ or NYSE [Source: Quandl]
 
     Parameters
     ----------
-    ticker : str
+    symbol : str
         ticker to get short interest from
-    start : str
-        start date to start displaying short interest volume
+    data: pd.DataFrame
+        Short interest dataframe
     nyse : bool
         data from NYSE if true, otherwise NASDAQ
-    df_short_interest: pd.DataFrame
-        Short interest dataframe
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (2 axis is expected in the list), by default None
-
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
 
-    # This plot has 2 axis
-    if not external_axes:
-        _, ax1 = plt.subplots(figsize=plot_autoscale(), dpi=PLOT_DPI)
-        ax2 = ax1.twinx()
-    else:
-        if len(external_axes) != 2:
-            logger.error("Expected list of two axis items.")
-            console.print("[red]Expected list of two axis items./n[/red]")
-            return
-        (ax1, ax2) = external_axes
+    fig = OpenBBFigure.create_subplots(1, 1, specs=[[{"secondary_y": True}]])
+    fig.set_title(f"{('NASDAQ', 'NYSE')[nyse]} Short Interest on {symbol}")
 
-    ax1.bar(
-        df_short_interest.index,
-        df_short_interest["Short Volume"],
-        0.3,
-        color=theme.down_color,
+    data.index = pd.to_datetime(data.index).strftime("%Y-%m-%d")
+    fig.add_bar(
+        x=data.index,
+        y=data["Short Volume"],
+        name="Short Volume",
+        marker_color=theme.down_color,
+        secondary_y=False,
     )
-    ax1.bar(
-        df_short_interest.index,
-        df_short_interest["Total Volume"] - df_short_interest["Short Volume"],
-        0.3,
-        bottom=df_short_interest["Short Volume"],
-        color=theme.up_color,
+    fig.add_bar(
+        x=data.index,
+        y=data["Total Volume"] - data["Short Volume"],
+        name="Total Volume",
+        marker_color=theme.up_color,
+        secondary_y=False,
     )
-    ax1.set_ylabel("Shares")
-    ax1.set_title(f"{('NASDAQ', 'NYSE')[nyse]} Short Interest on {ticker}")
 
-    ax1.legend(labels=["Short Volume", "Total Volume"], loc="best")
-    ax1.yaxis.set_major_formatter(matplotlib.ticker.EngFormatter())
-
-    ax2.tick_params(axis="y")
-    ax2.set_ylabel("Percentage of Volume Shorted")
-    ax2.plot(
-        df_short_interest.index,
-        df_short_interest["% of Volume Shorted"],
+    fig.add_scatter(
+        x=data.index,
+        y=data["% of Volume Shorted"].values,
+        name="Fees",
+        marker_color=theme.get_colors()[0],
+        secondary_y=True,
+        showlegend=False,
     )
-    ax2.tick_params(axis="y", which="major")
-    ax2.yaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%.0f%%"))
+    fig.update_yaxes(
+        title_text="Percentage of Volume Shorted", secondary_y=True, tickformat="%.0f%%"
+    )
+    fig.update_yaxes(secondary_y=False, side="left", title_text="Shares")
+    fig.update_xaxes(title_text="Date", type="category", nticks=6)
+    fig.update_layout(barmode="stack", margin=dict(l=50))
 
-    theme.style_twin_axes(ax1, ax2)
-
-    if not external_axes:
-        theme.visualize_output()
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
 @check_api_key(["API_KEY_QUANDL"])
-def short_interest(ticker: str, nyse: bool, days: int, raw: bool, export: str):
-    """Plots the short interest of a stock. This corresponds to the
+def short_interest(
+    symbol: str,
+    nyse: bool = False,
+    limit: int = 10,
+    raw: bool = False,
+    export: str = "",
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
+):
+    """Plot the short interest of a stock. This corresponds to the
     number of shares that have been sold short but have not yet been
     covered or closed out. Either NASDAQ or NYSE [Source: Quandl]
 
     Parameters
     ----------
-    ticker : str
+    symbol : str
         ticker to get short interest from
     nyse : bool
         data from NYSE if true, otherwise NASDAQ
-    days : int
+    limit: int
         Number of past days to show short interest
     raw : bool
         Flag to print raw data instead
     export : str
         Export dataframe data to csv,json,xlsx file
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
-    df_short_interest = quandl_model.get_short_interest(ticker, nyse)
+    df_short_interest = quandl_model.get_short_interest(symbol, nyse)
 
-    df_short_interest = df_short_interest.tail(days)
+    df_short_interest = df_short_interest.tail(limit)
 
     df_short_interest.columns = [
         "".join(" " + char if char.isupper() else char.strip() for char in idx).strip()
@@ -133,28 +129,33 @@ def short_interest(ticker: str, nyse: bool, days: int, raw: bool, export: str):
     )
     df_short_interest["% of Volume Shorted"] = [round(pct, 2) for pct in vol_pct]
 
-    if raw:
-        df_short_interest["% of Volume Shorted"] = df_short_interest[
-            "% of Volume Shorted"
-        ].apply(lambda x: f"{x/100:.2%}")
-        df_short_interest = df_short_interest.applymap(
-            lambda x: lambda_long_number_format(x)
-        ).sort_index(ascending=False)
+    fig = plot_short_interest(symbol, df_short_interest, nyse, True)
 
-        df_short_interest.index = df_short_interest.index.date
+    if raw:
+        if not get_current_user().preferences.USE_INTERACTIVE_DF:
+            df_short_interest["% of Volume Shorted"] = df_short_interest[
+                "% of Volume Shorted"
+            ].apply(lambda x: f"{x/100:.2%}")
+
+            df_short_interest = df_short_interest.applymap(
+                lambda x: lambda_long_number_format(x)
+            ).sort_index(ascending=False)
 
         print_rich_table(
             df_short_interest,
             headers=list(df_short_interest.columns),
             show_index=True,
             title="Short Interest of Stock",
+            export=bool(export),
         )
-
-    console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "psi(quandl)",
         df_short_interest,
+        sheet_name,
+        fig,
     )
+
+    return fig.show(external=raw or external_axes)

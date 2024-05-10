@@ -1,32 +1,41 @@
 """Quantitative Analysis Controller Module"""
+
 __docformat__ = "numpy"
 
 import argparse
 import logging
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
-import numpy as np
 import pandas as pd
-from prompt_toolkit.completion import NestedCompleter
 
-from openbb_terminal import feature_flags as obbff
 from openbb_terminal.common.quantitative_analysis import qa_view, rolling_view
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.custom_prompt_toolkit import NestedCompleter
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.helper_funcs import (
     EXPORT_ONLY_FIGURES_ALLOWED,
     EXPORT_ONLY_RAW_DATA_ALLOWED,
+    check_list_dates,
     check_positive,
     check_proportion_range,
-    parse_known_args_and_warn,
-    check_list_dates,
 )
 from openbb_terminal.menu import session
 from openbb_terminal.parent_classes import StockBaseController
-from openbb_terminal.rich_config import console
+from openbb_terminal.rich_config import MenuText, console
+from openbb_terminal.stocks import stocks_helper
+from openbb_terminal.stocks.quantitative_analysis.beta_view import beta_view
 from openbb_terminal.stocks.quantitative_analysis.factors_view import capm_view
+from openbb_terminal.stocks.quantitative_analysis.qa_model import full_stock_df
+
+# pylint: disable=C0302
 
 logger = logging.getLogger(__name__)
+
+
+def no_data_message():
+    """Print message when no ticker is loaded"""
+    console.print("[red]No data loaded. Use 'load' command to load a symbol[/red]")
 
 
 class QaController(StockBaseController):
@@ -52,17 +61,23 @@ class QaController(StockBaseController):
         "normality",
         "qqplot",
         "unitroot",
-        "goodness",
-        "unitroot",
         "capm",
+        "beta",
         "var",
         "es",
+        "sh",
+        "so",
+        "om",
     ]
 
     stock_interval = [1, 5, 15, 30, 60]
-    stock_sources = ["yf", "av", "iex"]
+    stock_sources = ["YahooFinance", "AlphaVantage"]
     distributions = ["laplace", "student_t", "logistic", "normal"]
+    FULLER_REG = ["c", "ct", "ctt", "nc"]
+    KPS_REG = ["c", "ct"]
+    VALID_DISTRIBUTIONS = ["laplace", "student_t", "logistic", "normal"]
     PATH = "/stocks/qa/"
+    CHOICES_GENERATION = True
 
     def __init__(
         self,
@@ -70,33 +85,22 @@ class QaController(StockBaseController):
         start: datetime,
         interval: str,
         stock: pd.DataFrame,
-        queue: List[str] = None,
+        queue: Optional[List[str]] = None,
     ):
         """Constructor"""
         super().__init__(queue)
-
-        # TODO: Move these calculations to a model
-        stock["Returns"] = stock["Adj Close"].pct_change()
-        stock["LogRet"] = np.log(stock["Adj Close"]) - np.log(
-            stock["Adj Close"].shift(1)
-        )
-        stock["LogPrice"] = np.log(stock["Adj Close"])
-        stock = stock.rename(columns={"Adj Close": "AdjClose"})
-        stock = stock.dropna()
-        stock.columns = [x.lower() for x in stock.columns]
-
-        self.stock = stock
+        if not stock.empty:
+            self.stock = full_stock_df(stock)
+        else:
+            self.stock = stock
         self.ticker = ticker
         self.start = start
         self.interval = interval
-        self.target = "returns"
+        self.target = "returns" if not stock.empty else ""
 
-        if session and obbff.USE_PROMPT_TOOLKIT:
-            choices: dict = {c: {} for c in self.controller_choices}
-            choices["pick"] = {c: None for c in list(stock.columns)}
-            choices["load"]["-i"] = {c: None for c in self.stock_interval}
-            choices["load"]["--interval"] = {c: None for c in self.stock_interval}
-            choices["load"]["--source"] = {c: None for c in self.stock_sources}
+        if session and get_current_user().preferences.USE_PROMPT_TOOLKIT:
+            choices: dict = self.choices_default
+
             self.completer = NestedCompleter.from_nested_dict(choices)
 
     def print_help(self):
@@ -108,40 +112,46 @@ class QaController(StockBaseController):
             )
         else:
             stock_str = f"{s_intraday} {self.ticker}"
-        help_text = f"""[cmds]
-   load        load new ticker
-   pick        pick target column for analysis[/cmds]
 
-[param]Stock: [/param]{stock_str}
-[param]Target Column: [/param]{self.target}
-[cmds]
-[info]Statistics:[/info]
-    summary     brief summary statistics of loaded stock.
-    normality   normality statistics and tests
-    unitroot    unit root test for stationarity (ADF, KPSS)
-[info]Plots:[/info]
-    line        line plot of selected target
-    hist        histogram with density plot
-    cdf         cumulative distribution function
-    bw          box and whisker plot
-    acf         (partial) auto-correlation function differentials of prices
-    qqplot      residuals against standard normal curve
-[info]Rolling Metrics:[/info]
-    rolling     rolling mean and std deviation of prices
-    spread      rolling variance and std deviation of prices
-    quantile    rolling median and quantile of prices
-    skew        rolling skewness of distribution of prices
-    kurtosis    rolling kurtosis of distribution of prices
-[info]Risk:[/info]
-    var         display value at risk
-    es          display expected shortfall
-[info]Other:[/info]
-    raw         print raw data
-    decompose   decomposition in cyclic-trend, season, and residuals of prices
-    cusum       detects abrupt changes using cumulative sum algorithm of prices
-    capm        capital asset pricing model[/cmds]
-        """
-        console.print(text=help_text, menu="Stocks - Quantitative Analysis")
+        mt = MenuText("stocks/qa/")
+        mt.add_cmd("load")
+        mt.add_cmd("pick", not self.stock.empty)
+        mt.add_raw("\n")
+        mt.add_param(
+            "_ticker", stock_str if not self.stock.empty else "No ticker loaded"
+        )
+        mt.add_param("_target", self.target)
+        mt.add_raw("\n")
+        mt.add_info("_statistics_")
+        mt.add_cmd("summary", not self.stock.empty)
+        mt.add_cmd("normality", not self.stock.empty)
+        mt.add_cmd("unitroot", not self.stock.empty)
+        mt.add_info("_plots_")
+        mt.add_cmd("line", not self.stock.empty)
+        mt.add_cmd("hist", not self.stock.empty)
+        mt.add_cmd("cdf", not self.stock.empty)
+        mt.add_cmd("bw", not self.stock.empty)
+        mt.add_cmd("acf", not self.stock.empty)
+        mt.add_cmd("qqplot", not self.stock.empty)
+        mt.add_info("_rolling_metrics_")
+        mt.add_cmd("rolling", not self.stock.empty)
+        mt.add_cmd("spread", not self.stock.empty)
+        mt.add_cmd("quantile", not self.stock.empty)
+        mt.add_cmd("skew", not self.stock.empty)
+        mt.add_cmd("kurtosis", not self.stock.empty)
+        mt.add_info("_risk_")
+        mt.add_cmd("var", not self.stock.empty)
+        mt.add_cmd("es", not self.stock.empty)
+        mt.add_cmd("sh", not self.stock.empty)
+        mt.add_cmd("so", not self.stock.empty)
+        mt.add_cmd("om", not self.stock.empty)
+        mt.add_info("_other_")
+        mt.add_cmd("raw", not self.stock.empty)
+        mt.add_cmd("decompose", not self.stock.empty)
+        mt.add_cmd("cusum", not self.stock.empty)
+        mt.add_cmd("capm", not self.stock.empty)
+        mt.add_cmd("beta", not self.stock.empty)
+        console.print(text=mt.menu_text, menu="Stocks - Quantitative Analysis")
 
     def custom_reset(self):
         """Class specific component of reset command"""
@@ -166,17 +176,19 @@ class QaController(StockBaseController):
             "-t",
             "--target",
             dest="target",
-            type=lambda x: x.lower(),
+            type=str.lower,
             choices=list(self.stock.columns),
             help="Select variable to analyze",
         )
-        if other_args and "-t" not in other_args and "-h" not in other_args:
+        if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-t")
 
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             self.target = ns_parser.target
-        console.print("")
 
     @log_start_end(log=logger)
     def call_raw(self, other_args: List[str]):
@@ -197,24 +209,42 @@ class QaController(StockBaseController):
             dest="limit",
         )
         parser.add_argument(
-            "-d",
-            "--descend",
+            "-r",
+            "--reverse",
             action="store_true",
+            dest="reverse",
             default=False,
-            dest="descend",
-            help="Sort in descending order",
+            help=(
+                "Data is sorted in descending order by default. "
+                "Reverse flag will sort it in an ascending way. "
+                "Only works when raw data is displayed."
+            ),
+        )
+        parser.add_argument(
+            "-s",
+            "--sortby",
+            help="The column to sort by",
+            choices=stocks_helper.format_parse_choices(self.stock.columns),
+            type=str.lower,
+            dest="sortby",
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             qa_view.display_raw(
-                self.stock[self.target],
-                num=ns_parser.limit,
-                sort="",
-                des=ns_parser.descend,
+                data=self.stock,
+                limit=ns_parser.limit,
+                sortby=ns_parser.sortby,
+                ascend=ns_parser.reverse,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -228,11 +258,20 @@ class QaController(StockBaseController):
                 Summary statistics
             """,
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
-            qa_view.display_summary(df=self.stock, export=ns_parser.export)
+            if self.stock.empty:
+                no_data_message()
+                return
+            qa_view.display_summary(
+                data=self.stock,
+                export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
+            )
 
     @log_start_end(log=logger)
     def call_line(self, other_args: List[str]):
@@ -241,20 +280,12 @@ class QaController(StockBaseController):
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             add_help=False,
             prog="line",
-            description="Show line plot of selected data and allow to draw lines or highlight specific datetimes.",
+            description="Show line plot of selected data or highlight specific datetimes.",
         )
         parser.add_argument(
             "--log",
             help="Plot with y on log scale",
             dest="log",
-            action="store_true",
-            default=False,
-        )
-        parser.add_argument(
-            "-d",
-            "--draw",
-            help="Draw lines and annotate on the plot",
-            dest="draw",
             action="store_true",
             default=False,
         )
@@ -273,17 +304,20 @@ class QaController(StockBaseController):
             default="",
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_FIGURES_ALLOWED
         )
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             qa_view.display_line(
                 self.stock[self.target],
                 title=f"{self.ticker} {self.target}",
                 log_y=ns_parser.log,
-                draw=ns_parser.draw,
                 markers_lines=ns_parser.ml,
                 markers_scatter=ns_parser.ms,
+                export=ns_parser.export,
             )
 
     @log_start_end(log=logger)
@@ -300,11 +334,14 @@ class QaController(StockBaseController):
         parser.add_argument(
             "-b", "--bins", type=check_positive, default=15, dest="n_bins"
         )
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             qa_view.display_hist(
-                name=self.ticker,
-                df=self.stock,
+                symbol=self.ticker,
+                data=self.stock,
                 target=self.target,
                 bins=ns_parser.n_bins,
             )
@@ -320,15 +357,21 @@ class QaController(StockBaseController):
                 Cumulative distribution function
             """,
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             qa_view.display_cdf(
-                name=self.ticker,
-                df=self.stock,
+                data=self.stock,
+                symbol=self.ticker,
                 target=self.target,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -350,11 +393,14 @@ class QaController(StockBaseController):
             dest="year",
             help="Flag to show yearly bw plot",
         )
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             qa_view.display_bw(
-                name=self.ticker,
-                df=self.stock,
+                data=self.stock,
+                symbol=self.ticker,
                 target=self.target,
                 yearly=ns_parser.year,
             )
@@ -380,16 +426,22 @@ class QaController(StockBaseController):
             dest="multiplicative",
             help="decompose using multiplicative model instead of additive",
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             qa_view.display_seasonal(
-                name=self.ticker,
-                df=self.stock,
+                symbol=self.ticker,
+                data=self.stock,
                 target=self.target,
                 multiplicative=ns_parser.multiplicative,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -409,10 +461,14 @@ class QaController(StockBaseController):
             dest="threshold",
             type=float,
             default=(
-                max(self.stock[self.target].values)
-                - min(self.stock[self.target].values)
-            )
-            / 40,
+                (
+                    max(self.stock[self.target].values)
+                    - min(self.stock[self.target].values)
+                )
+                / 40
+                if not self.stock.empty
+                else 0
+            ),
             help="threshold",
         )
         parser.add_argument(
@@ -421,16 +477,23 @@ class QaController(StockBaseController):
             dest="drift",
             type=float,
             default=(
-                max(self.stock[self.target].values)
-                - min(self.stock[self.target].values)
-            )
-            / 80,
+                (
+                    max(self.stock[self.target].values)
+                    - min(self.stock[self.target].values)
+                )
+                / 80
+                if not self.stock.empty
+                else 0
+            ),
             help="drift",
         )
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             qa_view.display_cusum(
-                df=self.stock,
+                data=self.stock,
                 target=self.target,
                 threshold=ns_parser.threshold,
                 drift=ns_parser.drift,
@@ -455,16 +518,19 @@ class QaController(StockBaseController):
             default=15,
             help="maximum lags to display in plots",
         )
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
-            if self.target != "AdjClose":
+            if self.stock.empty:
+                no_data_message()
+                return
+            if self.target != "adjclose":
                 console.print(
-                    "Target not AdjClose.  For best results, use `pick AdjClose` first."
+                    "Target not adjclose.  For best results, use `pick adjclose` first."
                 )
 
             qa_view.display_acf(
-                name=self.ticker,
-                df=self.stock,
+                data=self.stock,
+                symbol=self.ticker,
                 target=self.target,
                 lags=ns_parser.lags,
             )
@@ -489,16 +555,22 @@ class QaController(StockBaseController):
             default=14,
             help="Window length",
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             rolling_view.display_mean_std(
-                name=self.ticker,
-                df=self.stock,
+                symbol=self.ticker,
+                data=self.stock,
                 target=self.target,
                 window=ns_parser.n_window,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -520,16 +592,22 @@ class QaController(StockBaseController):
             default=14,
             help="Window length",
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             rolling_view.display_spread(
-                name=self.ticker,
-                df=self.stock,
+                data=self.stock,
+                symbol=self.ticker,
                 target=self.target,
                 window=ns_parser.n_window,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -568,17 +646,23 @@ class QaController(StockBaseController):
             default=0.5,
             help="quantile",
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             rolling_view.display_quantile(
-                name=self.ticker,
-                df=self.stock,
+                data=self.stock,
+                symbol=self.ticker,
                 target=self.target,
                 window=ns_parser.n_window,
                 quantile=ns_parser.f_quantile,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -606,16 +690,22 @@ class QaController(StockBaseController):
             default=14,
             help="window length",
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             rolling_view.display_skew(
-                name=self.ticker,
-                df=self.stock,
+                symbol=self.ticker,
+                data=self.stock,
                 target=self.target,
                 window=ns_parser.n_window,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -643,16 +733,22 @@ class QaController(StockBaseController):
             default=14,
             help="window length",
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             rolling_view.display_kurtosis(
-                name=self.ticker,
-                df=self.stock,
+                symbol=self.ticker,
+                data=self.stock,
                 target=self.target,
                 window=ns_parser.n_window,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -666,12 +762,15 @@ class QaController(StockBaseController):
                 Normality tests
             """,
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             qa_view.display_normality(
-                df=self.stock, target=self.target, export=ns_parser.export
+                data=self.stock, target=self.target, export=ns_parser.export
             )
 
     @log_start_end(log=logger)
@@ -685,9 +784,14 @@ class QaController(StockBaseController):
                 Display QQ plot vs normal quantiles
             """,
         )
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
-            qa_view.display_qqplot(name=self.ticker, df=self.stock, target=self.target)
+            if self.stock.empty:
+                no_data_message()
+                return
+            qa_view.display_qqplot(
+                symbol=self.ticker, data=self.stock, target=self.target
+            )
 
     @log_start_end(log=logger)
     def call_unitroot(self, other_args: List[str]):
@@ -704,7 +808,7 @@ class QaController(StockBaseController):
             "-r",
             "--fuller_reg",
             help="Type of regression.  Can be ‘c’,’ct’,’ctt’,’nc’ 'c' - Constant and t - trend order",
-            choices=["c", "ct", "ctt", "nc"],
+            choices=self.FULLER_REG,
             default="c",
             type=str,
             dest="fuller_reg",
@@ -713,21 +817,27 @@ class QaController(StockBaseController):
             "-k",
             "--kps_reg",
             help="Type of regression.  Can be ‘c’,’ct'",
-            choices=["c", "ct"],
+            choices=self.KPS_REG,
             type=str,
             dest="kpss_reg",
             default="c",
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             qa_view.display_unitroot(
-                df=self.stock,
+                data=self.stock,
                 target=self.target,
                 fuller_reg=ns_parser.fuller_reg,
                 kpss_reg=ns_parser.kpss_reg,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -741,9 +851,56 @@ class QaController(StockBaseController):
                 Provides detailed information about a stock's risk compared to the market risk.
             """,
         )
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
+            if not self.ticker:
+                no_data_message()
+                return
             capm_view(self.ticker)
+
+    @log_start_end(log=logger)
+    def call_beta(self, other_args: List[str]):
+        """Call the beta command on loaded ticker"""
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="beta",
+            description="""
+                Displays a scatter plot demonstrating the beta of two stocks or ETFs.
+            """,
+        )
+        parser.add_argument(
+            "-r",
+            "--ref",
+            action="store",
+            dest="ref",
+            type=str,
+            default="SPY",
+            help="""
+                Reference ticker used for beta calculation.
+            """,
+        )
+        ns_parser = self.parse_known_args_and_warn(
+            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
+        )
+        # This assumes all intervals convert from string to int well
+        # This should handle weekly and monthly because the merge would only
+        # Work on the intersections
+        interval = "".join(c for c in self.interval if c.isdigit())
+        if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
+            beta_view(
+                symbol=self.ticker,
+                ref_symbol=ns_parser.ref,
+                data=self.stock,
+                interval=interval,
+                export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
+            )
 
     @log_start_end(log=logger)
     def call_var(self, other_args: List[str]):
@@ -795,30 +952,45 @@ class QaController(StockBaseController):
                 Percentile used for VaR calculations, for example input 99.9 equals a 99.9 Percent VaR
             """,
         )
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        parser.add_argument(
+            "-d",
+            "--datarange",
+            action="store",
+            dest="data_range",
+            type=int,
+            default=0,
+            help="""
+                Number of rows you want to use VaR over,
+                ex: if you are using days, 30 would show VaR for the last 30 TRADING days
+            """,
+        )
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
             if ns_parser.adjusted and ns_parser.student_t:
                 console.print("Select the adjusted or the student_t parameter.\n")
             else:
+                if self.stock.empty:
+                    no_data_message()
+                    return
                 qa_view.display_var(
                     self.stock,
                     self.ticker,
                     ns_parser.use_mean,
                     ns_parser.adjusted,
                     ns_parser.student_t,
-                    ns_parser.percentile / 100,
+                    ns_parser.percentile,
+                    ns_parser.data_range,
                     False,
                 )
 
+    @log_start_end(log=logger)
     def call_es(self, other_args: List[str]):
         """Process es command"""
         parser = argparse.ArgumentParser(
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             prog="es",
-            description="""
-                Provides Expected Shortfall (short: ES) of the selected stock.
-            """,
+            description="Provides Expected Shortfall (short: ES) of the selected stock.",
         )
         parser.add_argument(
             "-m",
@@ -831,9 +1003,8 @@ class QaController(StockBaseController):
         parser.add_argument(
             "-d",
             "--dist",
-            "--distributions",
             dest="distributions",
-            type=str,
+            type=str.lower,
             choices=self.distributions,
             default="normal",
             help="Distribution used for the calculations",
@@ -846,17 +1017,151 @@ class QaController(StockBaseController):
             type=float,
             default=99.9,
             help="""
-                Percentile used for ES calculations, for example input 99.9 equals a 99.9 Percent Expected Shortfall
+                Percentile for calculations, i.e. input 99.9 equals a 99.9 Percent Expected Shortfall
             """,
         )
 
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
             qa_view.display_es(
                 self.stock,
                 self.ticker,
                 ns_parser.use_mean,
                 ns_parser.distributions,
-                ns_parser.percentile / 100,
+                ns_parser.percentile,
                 False,
+            )
+
+    @log_start_end(log=logger)
+    def call_sh(self, other_args: List[str]):
+        """Process sh command"""
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="sh",
+            description="""
+                    Provides the sharpe ratio of the selected stock.
+                """,
+        )
+        parser.add_argument(
+            "-r",
+            "--rfr",
+            action="store",
+            dest="rfr",
+            type=float,
+            default=0,
+            help="Risk free return",
+        )
+        parser.add_argument(
+            "-w",
+            "--window",
+            action="store",
+            dest="window",
+            type=int,
+            default=252,
+            help="Rolling window length",
+        )
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
+        if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
+            data = self.stock["adjclose"]
+            qa_view.display_sharpe(data, ns_parser.rfr, ns_parser.window)
+
+    @log_start_end(log=logger)
+    def call_so(self, other_args: List[str]):
+        """Process so command"""
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="so",
+            description="""
+                Provides the sortino ratio of the selected stock.
+            """,
+        )
+        parser.add_argument(
+            "-t",
+            "--target",
+            action="store",
+            dest="target_return",
+            type=float,
+            default=0,
+            help="Target return",
+        )
+        parser.add_argument(
+            "-a",
+            "--adjusted",
+            action="store_true",
+            default=False,
+            dest="adjusted",
+            help="If one should adjust the sortino ratio inorder to make it comparable to the sharpe ratio",
+        )
+        parser.add_argument(
+            "-w",
+            "--window",
+            action="store",
+            dest="window",
+            type=int,
+            default=252,
+            help="Rolling window length",
+        )
+
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
+        if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
+            data = self.stock["returns"]
+            qa_view.display_sortino(
+                data, ns_parser.target_return, ns_parser.window, ns_parser.adjusted
+            )
+
+    @log_start_end(log=logger)
+    def call_om(self, other_args: List[str]):
+        """Process om command"""
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="om",
+            description="""
+                Provides omega ratio of the selected stock.
+            """,
+        )
+        parser.add_argument(
+            "-s",
+            "--start",
+            action="store",
+            dest="start",
+            type=float,
+            default=0,
+            help="""
+                Start of the omega ratio threshold
+            """,
+        )
+        parser.add_argument(
+            "-e",
+            "--end",
+            action="store",
+            dest="end",
+            type=float,
+            default=1.5,
+            help="""
+                End of the omega ratio threshold
+            """,
+        )
+
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
+        if ns_parser:
+            if self.stock.empty:
+                no_data_message()
+                return
+            data = self.stock["returns"]
+            qa_view.display_omega(
+                data,
+                ns_parser.start,
+                ns_parser.end,
             )

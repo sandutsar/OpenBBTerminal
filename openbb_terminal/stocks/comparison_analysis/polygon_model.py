@@ -1,50 +1,49 @@
-"Polygon Model"
+"""Polygon Model"""
+
 __docformat__ = "numpy"
 
 import logging
-from typing import List, Tuple
+from typing import List
 
-import requests
-
-from openbb_terminal import config_terminal as cfg
-from openbb_terminal.decorators import log_start_end
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.decorators import check_api_key, log_start_end
+from openbb_terminal.helper_funcs import request
 from openbb_terminal.rich_config import console
 
 logger = logging.getLogger(__name__)
 
 
 @log_start_end(log=logger)
-def get_similar_companies(ticker: str, us_only: bool) -> Tuple[List[str], str]:
+@check_api_key(["API_POLYGON_KEY"])
+def get_similar_companies(symbol: str, us_only: bool = False) -> List[str]:
     """Get similar companies from Polygon
 
     Parameters
     ----------
-    ticker : str
+    symbol: str
         Ticker to get similar companies of
+    us_only: bool
+        Only stocks from the US stock exchanges
 
     Returns
     -------
-    List[str] :
+    List[str]:
         List of similar tickers
-    str :
-        String indicating data source
     """
-    result = requests.get(
-        f"https://api.polygon.io/v1/meta/symbols/{ticker.upper()}/company?&apiKey={cfg.API_POLYGON_KEY}"
+    result = request(
+        f"https://api.polygon.io/v1/meta/symbols/{symbol.upper()}/company?&apiKey={get_current_user().credentials.API_POLYGON_KEY}"
     )
 
     similar = []
-    source = "Error"
 
     if result.status_code == 200:
         similar = result.json()["similar"]
-        source = "Polygon"
         if us_only:
             us_similar = []
             mkw_link = "https://www.marketwatch.com/investing/stock/"
             for sym in similar:
                 prep_link = mkw_link + sym
-                sent_req = requests.get(prep_link)
+                sent_req = request(prep_link)
                 if prep_link == sent_req.request.url:
                     us_similar.append(sym)
                 similar = us_similar
@@ -55,4 +54,4 @@ def get_similar_companies(ticker: str, us_only: bool) -> Tuple[List[str], str]:
     else:
         console.print(result.json()["error"])
 
-    return similar, source
+    return similar

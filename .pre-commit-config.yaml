@@ -1,15 +1,6 @@
 repos:
-  - repo: local
-    hooks:
-      - id: check-docs
-        name: Check Command Documentation
-        description: Ensures that all of the commands in the terminal are included in Hugo.
-        language: python
-        pass_filenames: false
-        args: ["--ignore-files=settings_controller.py,keys_controller.py,degiro_controller.py,", "--ignore-commands=login,al_swe,info_swe,goodness,resources,yf,yolo"]
-        entry: python custom_pre_commit/check_doc.py
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.1.0
+    rev: v4.4.0
     hooks:
       - id: check-yaml
       - id: end-of-file-fixer
@@ -19,33 +10,50 @@ repos:
       - id: check-merge-conflict
       - id: detect-private-key
   - repo: https://github.com/psf/black
-    rev: 22.3.0
+    rev: 24.1.0
     hooks:
       - id: black
-  - repo: https://github.com/pycqa/flake8
-    rev: 4.0.1
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: "v0.0.285"
     hooks:
-      - id: flake8
-        entry: flake8 --ignore=E203,W503 --max-line-length=122 --exclude ./build/pyinstaller/*
+      - id: ruff
+  - repo: https://github.com/pycqa/pydocstyle
+    rev: 6.3.0
+    hooks:
+      - id: pydocstyle
+        additional_dependencies: [tomli]
+        name: pydocstyle
+        entry: pydocstyle
+        language: python
+        types: [python]
+        files: '^openbb_platform/.*\.py$'
+        exclude: 'tests/.*\.py|openbb_platform/test_.*\.py'
+        args: ["--config=pyproject.toml"]
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.1.0
+    rev: v2.2.5
     hooks:
       - id: codespell
         entry: codespell
         args:
           [
-            "--ignore-words-list=zlot,ba,buil,coo,ether,hist,hsi,mape,navagation,operatio,pres,ser,yeld,shold,ist,varian,datas",
+            "--ignore-words-list=VAI,MIS,shs,gard,te,commun,parana,ro,zar,vie,hel,jewl,zlot,ba,buil,coo,ether,hist,hsi,mape,navagation,operatio,pres,ser,yeld,shold,ist,varian,datas,ake,creat,statics,ket,toke,certi,buidl,ot,fo",
             "--quiet-level=2",
-            "--skip=./tests,.git,*.css,*.csv,*.html,*.ini,*.ipynb,*.js,*.json,*.lock,*.scss,*.txt,*.yaml,build/pyinstaller/*",
+            "--skip=./**/tests/**,./**/test_*.py,.git,*.css,*.csv,*.html,*.ini,*.ipynb,*.js,*.json,*.lock,*.scss,*.txt,*.yaml,build/pyinstaller/*,./website/config.toml",
+            "-x=openbb_terminal/economy/fedreserve_model.py",
+            "-x=.github/workflows/linting.yml"
           ]
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: "v0.942"
+  - repo: local
     hooks:
       - id: mypy
-        args: ["--ignore-missing-imports", '--exclude=/setup\.py$']
-        additional_dependencies: [types-all]
+        name: mypy
+        description: ""
+        entry: mypy
+        language: python
+        "types_or": [python, pyi]
+        args: ["--ignore-missing-imports", "--scripts-are-modules", "--check-untyped-defs"]
+        require_serial: true
   - repo: https://github.com/kynan/nbstripout
-    rev: 0.5.0
+    rev: 0.6.1
     hooks:
       - id: nbstripout
         name: Strip notebooks output
@@ -53,17 +61,18 @@ repos:
     hooks:
       - id: pylint
         name: pylint
-        entry: pylint bots openbb_terminal terminal.py tests
+        entry: pylint
         language: system
         types: [python]
   - repo: https://github.com/Yelp/detect-secrets
-    rev: v1.2.0
+    rev: v1.4.0
     hooks:
       - id: detect-secrets
-        args: [ '--baseline', '.secrets.baseline', '--exclude-files', 'cassettes/*' ]
-        exclude: package.lock.json
-  - repo: https://github.com/asottile/pyupgrade
-    rev: v2.31.1
-    hooks:
-      - id: pyupgrade
-        args: [--py36-plus]
+        args:
+          [
+            "--baseline",
+            ".secrets.baseline",
+            "--exclude-files",
+            "cassettes/.*|record/.*|website/content/api/.*|openbb_platform/extensions/charting/openbb_charting/infrastructure/assets/.*\\.js|openbb_platform/extensions/charting/openbb_charting/infrastructure/.*\\.html",
+          ]
+    exclude: package.lock.json

@@ -1,25 +1,31 @@
 """SmartStake Model"""
+
 __docformat__ = "numpy"
 
-from typing import Union, Dict
-import requests
+from typing import Dict, Union
+
 import pandas as pd
 
-from openbb_terminal import config_terminal as cfg
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.decorators import check_api_key
+from openbb_terminal.helper_funcs import request
 from openbb_terminal.rich_config import console
 
 
-def get_luna_supply_stats(supply_type: str, days: int) -> pd.DataFrame:
+@check_api_key(["API_SMARTSTAKE_KEY", "API_SMARTSTAKE_TOKEN"])
+def get_luna_supply_stats(
+    supply_type: str = "lunaSupplyChallengeStats", days: int = 30
+) -> pd.DataFrame:
     """Get supply history of the Terra ecosystem
 
     Source: [Smartstake.io]
 
     Parameters
     ----------
-    days: int
-        Day count to fetch data
     supply_type: str
         Supply type to unpack json
+    days: int
+        Day count to fetch data
 
     Returns
     -------
@@ -27,28 +33,31 @@ def get_luna_supply_stats(supply_type: str, days: int) -> pd.DataFrame:
         Dataframe of supply history data
     """
 
+    current_user = get_current_user()
+
     payload: Dict[str, Union[int, str]] = {
         "type": "history",
         "dayCount": days,
-        "key": cfg.API_SMARTSTAKE_KEY,
-        "token": cfg.API_SMARTSTAKE_TOKEN,
+        "key": current_user.credentials.API_SMARTSTAKE_KEY,
+        "token": current_user.credentials.API_SMARTSTAKE_TOKEN,
     }
 
-    response = requests.get(
+    response = request(
         "https://prod.smartstakeapi.com/listData?app=TERRA",
         params=payload,
     )
+    response_json = response.json()
 
     df = pd.DataFrame()
 
-    if "errors" in response.json():
-        if "DENIED" in response.json()["errors"]:
+    if "errors" in response_json:
+        if "DENIED" in response_json["errors"]:
             console.print("[red]Invalid API Key[/red]\n")
         else:
-            console.print(response.json()["errors"])
+            console.print(response_json["errors"])
 
     else:
-        result = response.json()[supply_type]
+        result = response_json[supply_type]
 
         # check if result is not empty
         if result:

@@ -1,17 +1,18 @@
 """Whale Alert model"""
+
 __docformat__ = "numpy"
 
 import logging
 import textwrap
-from typing import Optional, Tuple, Any
+from typing import Any, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-import requests
 
-import openbb_terminal.config_terminal as cfg
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.decorators import check_api_key, log_start_end
+from openbb_terminal.helper_funcs import request
 from openbb_terminal.rich_config import console
-from openbb_terminal.decorators import log_start_end
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,8 @@ class ApiKeyException(Exception):
 
 
 @log_start_end(log=logger)
-def make_request(params: Optional[dict] = None) -> Tuple[int, Any]:
+@check_api_key(["API_WHALE_ALERT_KEY"])
+def make_request(params: Optional[dict] = None) -> Tuple[Optional[int], Any]:
     """Helper methods for requests [Source: https://docs.whale-alert.io/]
 
     Parameters
@@ -50,13 +52,16 @@ def make_request(params: Optional[dict] = None) -> Tuple[int, Any]:
 
     Returns
     -------
-    dict:
-        response from api request
+    Tuple[Optional[int], Any]
+        status code, response from api request
     """
 
-    api_key = cfg.API_WHALE_ALERT_KEY or ""
+    api_key = get_current_user().credentials.API_WHALE_ALERT_KEY or ""
     url = "https://api.whale-alert.io/v1/transactions?api_key=" + api_key
-    response = requests.get(url, params=params)
+    try:
+        response = request(url, params=params)
+    except Exception:
+        return None, None
 
     result = {}
 
@@ -79,7 +84,12 @@ def make_request(params: Optional[dict] = None) -> Tuple[int, Any]:
 
 
 @log_start_end(log=logger)
-def get_whales_transactions(min_value: int = 800000, limit: int = 100) -> pd.DataFrame:
+def get_whales_transactions(
+    min_value: int = 800000,
+    limit: int = 100,
+    sortby: str = "date",
+    ascend: bool = False,
+) -> pd.DataFrame:
     """Whale Alert's API allows you to retrieve live and historical transaction data from major blockchains.
     Supported blockchain: Bitcoin, Ethereum, Ripple, NEO, EOS, Stellar and Tron. [Source: https://docs.whale-alert.io/]
 
@@ -89,6 +99,10 @@ def get_whales_transactions(min_value: int = 800000, limit: int = 100) -> pd.Dat
         Minimum value of trade to track.
     limit: int
         Limit of transactions. Max 100
+    sortby: str
+        Key to sort by.
+    ascend: str
+        Sort in ascending order.
 
     Returns
     -------
@@ -120,15 +134,19 @@ def get_whales_transactions(min_value: int = 800000, limit: int = 100) -> pd.Dat
     )
 
     data["from"] = data.apply(
-        lambda x: x["from.owner"]
-        if x["from.owner"] not in [np.nan, None, np.NaN]
-        else x["from.owner_type"],
+        lambda x: (
+            x["from.owner"]
+            if x["from.owner"] not in [np.nan, None, np.NaN]
+            else x["from.owner_type"]
+        ),
         axis=1,
     )
     data["to"] = data.apply(
-        lambda x: x["to.owner"]
-        if x["to.owner"] not in [np.nan, None, np.NaN]
-        else x["to.owner_type"],
+        lambda x: (
+            x["to.owner"]
+            if x["to.owner"] not in [np.nan, None, np.NaN]
+            else x["to.owner_type"]
+        ),
         axis=1,
     )
     data.drop(
@@ -147,7 +165,7 @@ def get_whales_transactions(min_value: int = 800000, limit: int = 100) -> pd.Dat
         inplace=True,
     )
 
-    return data[
+    df = data[
         [
             "date",
             "symbol",
@@ -160,3 +178,5 @@ def get_whales_transactions(min_value: int = 800000, limit: int = 100) -> pd.Dat
             "to_address",
         ]
     ]
+    df = df.sort_values(by=sortby, ascending=ascend)
+    return df

@@ -1,14 +1,16 @@
 """ ARK View """
+
 __docformat__ = "numpy"
 
 import logging
 import os
+from typing import Optional
 
+from openbb_terminal import rich_config
+from openbb_terminal.core.session.current_user import get_current_user
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.helper_funcs import export_data, print_rich_table
-from openbb_terminal.rich_config import console
 from openbb_terminal.stocks.discovery import ark_model
-from openbb_terminal import rich_config
 
 logger = logging.getLogger(__name__)
 
@@ -32,64 +34,63 @@ def lambda_direction_color_red_green(val: str) -> str:
 
 @log_start_end(log=logger)
 def ark_orders_view(
-    num: int,
-    sort_col: str = "",
-    ascending: bool = False,
+    limit: int = 10,
+    sortby: str = "",
+    ascend: bool = False,
     buys_only: bool = False,
     sells_only: bool = False,
     fund: str = "",
     export: str = "",
+    sheet_name: Optional[str] = None,
 ) -> None:
     """Prints a table of the last N ARK Orders
 
     Parameters
     ----------
-    num: int
+    limit: int
         Number of stocks to display
-    sort_col : str
+    sortby: str
         Column to sort on
-    ascending : bool
+    ascend: bool
         Flag to sort in ascending order
-    buys_only : bool
+    buys_only: bool
         Flag to filter on buys only
-    sells_only : bool
+    sells_only: bool
         Flag to sort on sells only
-    fund : str
+    fund: str
         Optional filter by fund
-    export : str
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
+    export: str
         Export dataframe data to csv,json,xlsx file
     """
-    df_orders = ark_model.get_ark_orders()
+    df_orders = ark_model.get_ark_orders(buys_only, sells_only, fund)
+    if not df_orders.empty:
+        df_orders = ark_model.add_order_total(df_orders.head(limit))
 
-    if df_orders.empty:
-        console.print("The ARK orders aren't available at the moment.\n")
-        return
-    if fund:
-        df_orders = df_orders[df_orders.fund == fund]
-    if buys_only:
-        df_orders = df_orders[df_orders.direction == "Buy"]
-    if sells_only:
-        df_orders = df_orders[df_orders.direction == "Sell"]
-    df_orders = ark_model.add_order_total(df_orders.head(num))
+        if (
+            rich_config.USE_COLOR
+            and not get_current_user().preferences.USE_INTERACTIVE_DF
+        ):
+            df_orders["direction"] = df_orders["direction"].apply(
+                lambda_direction_color_red_green
+            )
 
-    if sort_col:
-        df_orders = df_orders.sort_values(by=sort_col, ascending=ascending)
-    if rich_config.USE_COLOR:
-        df_orders["direction"] = df_orders["direction"].apply(
-            lambda_direction_color_red_green
+        if sortby:
+            df_orders = df_orders.sort_values(by=sortby, ascending=ascend)
+
+        print_rich_table(
+            df_orders,
+            headers=[x.title() for x in df_orders.columns],
+            show_index=False,
+            title="Orders by ARK Investment Management LLC",
+            export=bool(export),
         )
-
-    print_rich_table(
-        df_orders,
-        headers=[x.title() for x in df_orders.columns],
-        show_index=False,
-        title="Orders by ARK Investment Management LLC",
-    )
-    console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "arkord",
         df_orders,
+        sheet_name,
     )

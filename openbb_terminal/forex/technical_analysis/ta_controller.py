@@ -1,36 +1,39 @@
 """Crypto Technical Analysis Controller Module"""
+
 __docformat__ = "numpy"
 # pylint:disable=too-many-lines
 
 import argparse
 import logging
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
+import numpy as np
 import pandas as pd
-from prompt_toolkit.completion import NestedCompleter
 
-from openbb_terminal import feature_flags as obbff
 from openbb_terminal.common.technical_analysis import (
     custom_indicators_view,
     momentum_view,
     overlap_view,
     trend_indicators_view,
+    volatility_model,
     volatility_view,
     volume_view,
 )
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.custom_prompt_toolkit import NestedCompleter
 from openbb_terminal.decorators import log_start_end
+from openbb_terminal.forex.forex_helper import FOREX_SOURCES
 from openbb_terminal.helper_funcs import (
     EXPORT_BOTH_RAW_DATA_AND_FIGURES,
     check_positive,
+    check_positive_float,
     check_positive_list,
-    parse_known_args_and_warn,
     valid_date,
 )
-from openbb_terminal.forex.forex_helper import FOREX_SOURCES
 from openbb_terminal.menu import session
 from openbb_terminal.parent_classes import StockBaseController
-from openbb_terminal.rich_config import console
+from openbb_terminal.rich_config import MenuText, console
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,7 @@ class TechnicalAnalysisController(StockBaseController):
     ]
 
     PATH = "/forex/ta/"
+    CHOICES_GENERATION = True
 
     def __init__(
         self,
@@ -64,7 +68,7 @@ class TechnicalAnalysisController(StockBaseController):
         start: datetime,
         interval: str,
         data: pd.DataFrame,
-        queue: List[str] = None,
+        queue: Optional[List[str]] = None,
     ):
         """Constructor"""
         super().__init__(queue)
@@ -76,38 +80,39 @@ class TechnicalAnalysisController(StockBaseController):
         self.data = data
         self.data["Adj Close"] = data["Close"]
 
-        if session and obbff.USE_PROMPT_TOOLKIT:
-            choices: dict = {c: {} for c in self.controller_choices}
+        if session and get_current_user().preferences.USE_PROMPT_TOOLKIT:
+            choices: dict = self.choices_default
+
             self.completer = NestedCompleter.from_nested_dict(choices)
 
     def print_help(self):
         """Print help"""
-        currency_str = f" {self.ticker} (from {self.start.strftime('%Y-%m-%d')})"
-        help_text = f"""[cmds]
-[param]Currency Pair Loaded: [/param]{currency_str}
-[param]Source: [/param]{FOREX_SOURCES[self.source]}
-
-[info]Overlap:[/info]
-    ema         exponential moving average
-    sma         simple moving average
-    zlma        zero lag moving average
-[info]Momentum:[/info]
-    cci         commodity channel index
-    macd        moving average convergence/divergence
-    rsi         relative strength index
-    stoch       stochastic oscillator
-    fisher      fisher transform
-    cg          centre of gravity
-[info]Trend:[/info]
-    adx         average directional movement index
-    aroon       aroon indicator
-[info]Volatility:[/info]
-    bbands      bollinger bands
-    donchian    donchian channels
-[info]Custom:[/info]
-    fib         fibonacci retracement[/cmds]
-"""
-        console.print(text=help_text, menu="Forex - Technical Analysis")
+        mt = MenuText("forex/ta/")
+        mt.add_param(
+            "_currency", f"{self.ticker} (from {self.start.strftime('%Y-%m-%d')})"
+        )
+        mt.add_param("_source", FOREX_SOURCES[self.source])
+        mt.add_raw("\n")
+        mt.add_info("_overlap_")
+        mt.add_cmd("ema")
+        mt.add_cmd("sma")
+        mt.add_cmd("zlma")
+        mt.add_info("_momentum_")
+        mt.add_cmd("cci")
+        mt.add_cmd("macd")
+        mt.add_cmd("rsi")
+        mt.add_cmd("stoch")
+        mt.add_cmd("fisher")
+        mt.add_cmd("cg")
+        mt.add_info("_trend_")
+        mt.add_cmd("adx")
+        mt.add_cmd("aroon")
+        mt.add_info("_volatility_")
+        mt.add_cmd("bbands")
+        mt.add_cmd("donchian")
+        mt.add_info("_custom_")
+        mt.add_cmd("fib")
+        console.print(text=mt.menu_text, menu="Forex - Technical Analysis")
 
     def custom_reset(self):
         """Class specific component of reset command"""
@@ -161,17 +166,20 @@ class TechnicalAnalysisController(StockBaseController):
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             overlap_view.view_ma(
                 ma_type="EMA",
-                s_ticker=self.ticker,
-                series=self.data["Close"],
-                length=ns_parser.n_length,
+                symbol=self.ticker,
+                data=self.data["Close"],
+                window=ns_parser.n_length,
                 offset=ns_parser.n_offset,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -214,17 +222,20 @@ class TechnicalAnalysisController(StockBaseController):
 
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             overlap_view.view_ma(
                 ma_type="SMA",
-                s_ticker=self.ticker,
-                series=self.data["Close"],
-                length=ns_parser.n_length,
+                symbol=self.ticker,
+                data=self.data["Close"],
+                window=ns_parser.n_length,
                 offset=ns_parser.n_offset,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -268,17 +279,20 @@ class TechnicalAnalysisController(StockBaseController):
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             overlap_view.view_ma(
                 ma_type="ZLMA",
-                s_ticker=self.ticker,
-                series=self.data["Close"],
-                length=ns_parser.n_length,
+                symbol=self.ticker,
+                data=self.data["Close"],
+                window=ns_parser.n_length,
                 offset=ns_parser.n_offset,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -317,16 +331,19 @@ class TechnicalAnalysisController(StockBaseController):
             help="scalar",
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             momentum_view.display_cci(
-                s_ticker=self.ticker,
-                ohlc=self.data,
-                length=ns_parser.n_length,
+                symbol=self.ticker,
+                data=self.data,
+                window=ns_parser.n_length,
                 scalar=ns_parser.n_scalar,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -349,7 +366,6 @@ class TechnicalAnalysisController(StockBaseController):
             """,
         )
         parser.add_argument(
-            "-f",
             "--fast",
             action="store",
             dest="n_fast",
@@ -358,7 +374,6 @@ class TechnicalAnalysisController(StockBaseController):
             help="The short period.",
         )
         parser.add_argument(
-            "-s",
             "--slow",
             action="store",
             dest="n_slow",
@@ -375,17 +390,20 @@ class TechnicalAnalysisController(StockBaseController):
             help="The signal period.",
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             momentum_view.display_macd(
-                s_ticker=self.ticker,
-                series=self.data["Adj Close"],
+                symbol=self.ticker,
+                data=self.data["Adj Close"],
                 n_fast=ns_parser.n_fast,
                 n_slow=ns_parser.n_slow,
                 n_signal=ns_parser.n_signal,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -435,17 +453,20 @@ class TechnicalAnalysisController(StockBaseController):
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             momentum_view.display_rsi(
-                s_ticker=self.ticker,
-                series=self.data["Adj Close"],
-                length=ns_parser.n_length,
+                symbol=self.ticker,
+                data=self.data["Adj Close"],
+                window=ns_parser.n_length,
                 scalar=ns_parser.n_scalar,
                 drift=ns_parser.n_drift,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -491,17 +512,20 @@ class TechnicalAnalysisController(StockBaseController):
             help="The time period of the slowk moving average",
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             momentum_view.display_stoch(
-                s_ticker=self.ticker,
-                ohlc=self.data,
+                symbol=self.ticker,
+                data=self.data,
                 fastkperiod=ns_parser.n_fastkperiod,
                 slowdperiod=ns_parser.n_slowdperiod,
                 slowkperiod=ns_parser.n_slowkperiod,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -532,15 +556,18 @@ class TechnicalAnalysisController(StockBaseController):
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             momentum_view.display_fisher(
-                s_ticker=self.ticker,
-                ohlc=self.data,
-                length=ns_parser.n_length,
+                symbol=self.ticker,
+                data=self.data,
+                window=ns_parser.n_length,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -571,15 +598,18 @@ class TechnicalAnalysisController(StockBaseController):
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             momentum_view.display_cg(
-                s_ticker=self.ticker,
-                series=self.data["Adj Close"],
-                length=ns_parser.n_length,
+                symbol=self.ticker,
+                data=self.data["Adj Close"],
+                window=ns_parser.n_length,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -626,17 +656,20 @@ class TechnicalAnalysisController(StockBaseController):
             help="drift",
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             trend_indicators_view.display_adx(
-                s_ticker=self.ticker,
-                ohlc=self.data,
-                length=ns_parser.n_length,
+                symbol=self.ticker,
+                data=self.data,
+                window=ns_parser.n_length,
                 scalar=ns_parser.n_scalar,
                 drift=ns_parser.n_drift,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -690,16 +723,19 @@ class TechnicalAnalysisController(StockBaseController):
             help="offset",
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             trend_indicators_view.display_aroon(
-                s_ticker=self.ticker,
-                ohlc=self.data,
-                length=ns_parser.n_length,
+                symbol=self.ticker,
+                data=self.data,
+                window=ns_parser.n_length,
                 scalar=ns_parser.n_scalar,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -738,9 +774,11 @@ class TechnicalAnalysisController(StockBaseController):
             "--std",
             action="store",
             dest="n_std",
-            type=check_positive,
+            type=check_positive_float,
             default=2,
             help="std",
+            choices=np.arange(0.0, 10, 0.25).tolist(),
+            metavar="N_STD",
         )
 
         parser.add_argument(
@@ -749,20 +787,24 @@ class TechnicalAnalysisController(StockBaseController):
             action="store",
             dest="s_mamode",
             default="sma",
+            choices=volatility_model.MAMODES,
             help="mamode",
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             volatility_view.display_bbands(
-                ticker=self.ticker,
-                ohlc=self.data,
-                length=ns_parser.n_length,
+                symbol=self.ticker,
+                data=self.data,
+                window=ns_parser.n_length,
                 n_std=ns_parser.n_std,
                 mamode=ns_parser.s_mamode,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -802,16 +844,19 @@ class TechnicalAnalysisController(StockBaseController):
             help="length",
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             volatility_view.display_donchian(
-                ticker=self.ticker,
-                ohlc=self.data,
+                symbol=self.ticker,
+                data=self.data,
                 upper_length=ns_parser.n_length_upper,
                 lower_length=ns_parser.n_length_lower,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -843,15 +888,18 @@ class TechnicalAnalysisController(StockBaseController):
             help="uses open value of data",
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             volume_view.display_ad(
-                s_ticker=self.ticker,
-                ohlc=self.data,
+                symbol=self.ticker,
+                data=self.data,
                 use_open=ns_parser.b_use_open,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -872,14 +920,17 @@ class TechnicalAnalysisController(StockBaseController):
             """,
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             volume_view.display_obv(
-                s_ticker=self.ticker,
-                ohlc=self.data,
+                symbol=self.ticker,
+                data=self.data,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -897,8 +948,10 @@ class TechnicalAnalysisController(StockBaseController):
             "--period",
             dest="period",
             type=int,
-            help="Days to lookback for retracement",
+            help="Days to look back for retracement",
             default=120,
+            choices=range(1, 960),
+            metavar="PERIOD",
         )
 
         parser.add_argument(
@@ -917,15 +970,18 @@ class TechnicalAnalysisController(StockBaseController):
             required="--start" in other_args,
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             custom_indicators_view.fibonacci_retracement(
-                s_ticker=self.ticker,
-                ohlc=self.data,
-                period=ns_parser.period,
+                symbol=self.ticker,
+                data=self.data,
+                limit=ns_parser.period,
                 start_date=ns_parser.start,
                 end_date=ns_parser.end,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )

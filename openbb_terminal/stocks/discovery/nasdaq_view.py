@@ -1,14 +1,16 @@
 """NASDAQ DataLink View"""
+
 __docformat__ = "numpy"
 
 import logging
 import os
+from datetime import datetime
+from typing import Optional
 
-from openbb_terminal.decorators import log_start_end
+from openbb_terminal.decorators import check_api_key, log_start_end
 from openbb_terminal.helper_funcs import export_data, print_rich_table
 from openbb_terminal.rich_config import console
 from openbb_terminal.stocks.discovery import nasdaq_model
-from openbb_terminal.decorators import check_api_key
 
 # pylint: disable=E1123
 
@@ -18,12 +20,14 @@ logger = logging.getLogger(__name__)
 
 @log_start_end(log=logger)
 @check_api_key(["API_KEY_QUANDL"])
-def display_top_retail(n_days: int = 3, export: str = ""):
+def display_top_retail(
+    limit: int = 3, export: str = "", sheet_name: Optional[str] = None
+):
     """Display the top 10 retail traded stocks for last days
 
     Parameters
     ----------
-    n_days : int, optional
+    limit : int, optional
         Number of days to show by default 3
     export : str, optional
         Format to export data, by default ""
@@ -33,43 +37,57 @@ def display_top_retail(n_days: int = 3, export: str = ""):
     if retails.empty:
         return
 
-    for date, df in retails.head(n_days * 10).groupby("Date"):
-        df = df.drop(columns=["Date"])
-        df = df.reset_index(drop=True)
+    for date, df in retails.head(limit * 10).groupby("Date"):
+        clean_df = df.drop(columns=["Date"])
+        clean_df = clean_df.reset_index(drop=True)
         print_rich_table(
-            df,
+            clean_df,
             headers=[x.title() for x in df.columns],
             show_index=False,
             title=f"[bold]{date} Top Retail:[/bold]",
+            export=bool(export),
         )
-
         console.print("")
-    export_data(export, os.path.dirname(os.path.abspath(__file__)), "rtat", retails)
+
+    export_data(
+        export,
+        os.path.dirname(os.path.abspath(__file__)),
+        "rtat",
+        retails,
+        sheet_name,
+    )
 
 
 @log_start_end(log=logger)
 def display_dividend_calendar(
-    date: str,
-    sort_col: str = "Dividend",
-    ascending: bool = False,
+    date: Optional[str] = None,
+    sortby: str = "Dividend",
+    ascend: bool = False,
     limit: int = 10,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ):
     """Display NASDAQ dividend calendar
 
     Parameters
     ----------
     date: str
-        Date to get dividend calendar for
-    sort_col: str
+        Date to get dividend calendar for, format YYYY-MM-DD
+    sortby: str
         Column to sort data for
-    ascending: bool
+    ascend: bool
         Flag to sort in ascending order
     limit: int
         Number of results to show
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
     export: str
         Format to export data
     """
+
+    if date is None:
+        date = datetime.today().strftime("%Y-%m-%d")
+
     div_map = {
         "symbol": "Symbol",
         "companyName": "Name",
@@ -89,11 +107,18 @@ def display_dividend_calendar(
         return
     calendar = calendar.drop(columns=["announcement_Date"])
     calendar.columns = calendar.columns.map(div_map)
-    calendar = calendar.sort_values(by=sort_col, ascending=ascending)
+    calendar = calendar.sort_values(by=sortby, ascending=ascend)
     print_rich_table(
-        calendar.head(limit),
+        calendar,
         headers=[x.title() for x in calendar.columns],
         title=f"[bold]Dividend Calendar for {date}[/bold]",
+        export=bool(export),
+        limit=limit,
     )
-    console.print("")
-    export_data(export, os.path.dirname(os.path.abspath(__file__)), "divcal", calendar)
+    export_data(
+        export,
+        os.path.dirname(os.path.abspath(__file__)),
+        "divcal",
+        calendar,
+        sheet_name,
+    )

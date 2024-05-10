@@ -1,335 +1,153 @@
 """Volume View"""
+
 __docformat__ = "numpy"
 
 import logging
 import os
-from typing import Optional, List
+from typing import Optional, Union
 
-import matplotlib.pyplot as plt
 import pandas as pd
 
-from openbb_terminal.config_terminal import theme
-from openbb_terminal.common.technical_analysis import volume_model
-from openbb_terminal.config_plot import PLOT_DPI
+from openbb_terminal import OpenBBFigure
+from openbb_terminal.common.technical_analysis import ta_helpers
+from openbb_terminal.core.plots.plotly_ta.ta_class import PlotlyTA
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_funcs import export_data, plot_autoscale, reindex_dates
-from openbb_terminal.rich_config import console
+from openbb_terminal.helper_funcs import export_data
 
 logger = logging.getLogger(__name__)
 
 
 @log_start_end(log=logger)
 def display_ad(
-    ohlc: pd.DataFrame,
+    data: pd.DataFrame,
     use_open: bool = False,
-    s_ticker: str = "",
+    symbol: str = "",
     export: str = "",
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Plot AD technical indicator
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots AD technical indicator
 
     Parameters
     ----------
-    ohlc : pd.DataFrame
-        Dataframe of prices
+    data : pd.DataFrame
+        Dataframe of ohlc prices
     use_open : bool
         Whether to use open prices in calculation
-    s_ticker : str
-        Ticker
+    symbol : str
+        Ticker symbol
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
     export: str
         Format to export data as
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (3 axes is expected in the list), by default None
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
-    divisor = 1_000_000
-    df_vol = ohlc["Volume"] / divisor
-    df_vol.name = "Adj Volume"
-    df_ta = volume_model.ad(ohlc, use_open)
-    df_cal = df_ta["AD"] / divisor
-    df_cal.name = "Adj AD"
+    ta = PlotlyTA()
+    fig = ta.plot(data, dict(ad=dict(use_open=use_open)), f"{symbol.upper()} AD", False)
 
-    plot_data = pd.merge(ohlc, df_vol, how="outer", left_index=True, right_index=True)
-    plot_data = pd.merge(
-        plot_data, df_ta, how="outer", left_index=True, right_index=True
-    )
-    plot_data = pd.merge(
-        plot_data, df_cal, how="outer", left_index=True, right_index=True
-    )
-    plot_data = reindex_dates(plot_data)
-
-    # This plot has 3 axes
-    if external_axes is None:
-        _, axes = plt.subplots(
-            3,
-            1,
-            sharex=True,
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
-        )
-        ax1, ax2, ax3 = axes
-    else:
-        if len(external_axes) != 3:
-            logger.error("Expected list of three axis items.")
-            console.print("[red]Expected list of 3 axis items./n[/red]")
-            return
-        (ax1, ax2, ax3) = external_axes
-
-    ax1.plot(plot_data.index, plot_data["Adj Close"].values)
-    ax1.set_title(f"{s_ticker} AD", x=0.08, y=1)
-    ax1.set_xlim(plot_data.index[0], plot_data.index[-1])
-    ax1.set_ylabel("Price")
-    theme.style_primary_axis(
-        ax1,
-        data_index=plot_data.index.to_list(),
-        tick_labels=plot_data["date"].to_list(),
-    )
-
-    ax2.set_ylabel("Volume [M]")
-    bar_colors = [
-        theme.down_color if x[1].Open < x[1].Close else theme.up_color
-        for x in plot_data.iterrows()
-    ]
-    ax2.bar(
-        plot_data.index,
-        plot_data["Adj Volume"].values,
-        color=bar_colors,
-        width=theme.volume_bar_width,
-    )
-    ax2.set_xlim(plot_data.index[0], plot_data.index[-1])
-    theme.style_primary_axis(
-        ax2,
-        data_index=plot_data.index.to_list(),
-        tick_labels=plot_data["date"].to_list(),
-    )
-
-    ax3.set_ylabel("A/D [M]")
-    ax3.plot(plot_data.index, plot_data["Adj AD"])
-    ax3.set_xlim(plot_data.index[0], plot_data.index[-1])
-    ax3.axhline(0, linestyle="--")
-    theme.style_primary_axis(
-        ax3,
-        data_index=plot_data.index.to_list(),
-        tick_labels=plot_data["date"].to_list(),
-    )
-
-    if external_axes is None:
-        theme.visualize_output()
+    if ta_helpers.check_columns(data) is None:
+        return None
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)).replace("common", "stocks"),
         "ad",
-        df_ta,
+        ta.df_ta,
+        sheet_name,
+        fig,
     )
+
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
 def display_adosc(
-    ohlc: pd.DataFrame,
+    data: pd.DataFrame,
     fast: int = 3,
     slow: int = 10,
     use_open: bool = False,
-    s_ticker: str = "",
+    symbol: str = "",
     export: str = "",
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Display AD Osc Indicator
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots AD Osc Indicator
 
     Parameters
     ----------
-    ohlc : pd.DataFrame
-        Dataframe of prices
+    data : pd.DataFrame
+        Dataframe of ohlc prices
     use_open : bool
         Whether to use open prices in calculation
     fast: int
-         Length of fast window
+        Length of fast window
     slow : int
         Length of slow window
-    s_ticker : str
+    symbol : str
         Stock ticker
     export : str
         Format to export data
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (3 axes is expected in the list), by default None
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
-    divisor = 1_000_000
-    df_vol = ohlc["Volume"] / divisor
-    df_vol.name = "Adj Volume"
-    df_ta = volume_model.adosc(ohlc, use_open, fast, slow)
-    df_cal = df_ta[df_ta.columns[0]] / divisor
-    df_cal.name = "Adj ADOSC"
-
-    plot_data = pd.merge(ohlc, df_vol, how="outer", left_index=True, right_index=True)
-    plot_data = pd.merge(
-        plot_data, df_ta, how="outer", left_index=True, right_index=True
+    ta = PlotlyTA()
+    fig = ta.plot(
+        data,
+        dict(adosc=dict(fast=fast, slow=slow, use_open=use_open)),
+        f"{symbol.upper()} AD Oscillator",
+        False,
     )
-    plot_data = pd.merge(
-        plot_data, df_cal, how="outer", left_index=True, right_index=True
-    )
-    plot_data = reindex_dates(plot_data)
-
-    # This plot has 3 axes
-    if external_axes is None:
-        _, axes = plt.subplots(
-            3,
-            1,
-            sharex=True,
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
-        )
-        ax1, ax2, ax3 = axes
-    else:
-        if len(external_axes) != 3:
-            logger.error("Expected list of three axis items.")
-            console.print("[red]Expected list of 3 axis items./n[/red]")
-            return
-        (ax1, ax2, ax3) = external_axes
-
-    ax1.set_title(f"{s_ticker} AD Oscillator")
-    ax1.plot(plot_data.index, plot_data["Adj Close"].values)
-    ax1.set_xlim(plot_data.index[0], plot_data.index[-1])
-    ax1.set_ylabel("Price")
-    theme.style_primary_axis(
-        ax1,
-        data_index=plot_data.index.to_list(),
-        tick_labels=plot_data["date"].to_list(),
-    )
-
-    ax2.set_ylabel("Volume [M]")
-    bar_colors = [
-        theme.down_color if x[1].Open < x[1].Close else theme.up_color
-        for x in plot_data.iterrows()
-    ]
-    ax2.bar(
-        plot_data.index,
-        plot_data["Adj Volume"],
-        color=bar_colors,
-        width=theme.volume_bar_width,
-    )
-    ax2.set_xlim(plot_data.index[0], plot_data.index[-1])
-    theme.style_primary_axis(
-        ax2,
-        data_index=plot_data.index.to_list(),
-        tick_labels=plot_data["date"].to_list(),
-    )
-
-    ax3.set_ylabel("AD Osc [M]")
-    ax3.plot(plot_data.index, plot_data["Adj ADOSC"], label="AD Osc")
-    ax3.set_xlim(plot_data.index[0], plot_data.index[-1])
-    theme.style_primary_axis(
-        ax3,
-        data_index=plot_data.index.to_list(),
-        tick_labels=plot_data["date"].to_list(),
-    )
-
-    if external_axes is None:
-        theme.visualize_output()
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)).replace("common", "stocks"),
         "adosc",
-        df_ta,
+        ta.df_ta,
+        sheet_name,
+        fig,
     )
+
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
 def display_obv(
-    ohlc: pd.DataFrame,
-    s_ticker: str = "",
+    data: pd.DataFrame,
+    symbol: str = "",
     export: str = "",
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Plot OBV technical indicator
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots OBV technical indicator
 
     Parameters
     ----------
-    ohlc : pd.DataFrame
-        Dataframe of prices
-    s_ticker : str
+    data : pd.DataFrame
+        Dataframe of ohlc prices
+    symbol : str
         Ticker
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
     export: str
         Format to export data as
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (1 axis is expected in the list), by default None
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
-    divisor = 1_000_000
-    df_vol = ohlc["Volume"] / divisor
-    df_vol.name = "Adj Volume"
-    df_ta = volume_model.obv(ohlc)
-    df_cal = df_ta[df_ta.columns[0]] / divisor
-    df_cal.name = "Adj OBV"
+    ta = PlotlyTA()
+    fig = ta.plot(data, dict(obv=dict()), f"{symbol.upper()} OBV", False)
 
-    plot_data = pd.merge(ohlc, df_vol, how="outer", left_index=True, right_index=True)
-    plot_data = pd.merge(
-        plot_data, df_ta, how="outer", left_index=True, right_index=True
-    )
-    plot_data = pd.merge(
-        plot_data, df_cal, how="outer", left_index=True, right_index=True
-    )
-    plot_data = reindex_dates(plot_data)
-
-    # This plot has 3 axes
-    if external_axes is None:
-        _, axes = plt.subplots(
-            3,
-            1,
-            sharex=True,
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
-        )
-        ax1, ax2, ax3 = axes
-    else:
-        if len(external_axes) != 3:
-            logger.error("Expected list of three axis items.")
-            console.print("[red]Expected list of 3 axis items./n[/red]")
-            return
-        (ax1, ax2, ax3) = external_axes
-
-    ax1.plot(plot_data.index, plot_data["Adj Close"].values)
-    ax1.set_title(f"{s_ticker} OBV")
-    ax1.set_xlim(plot_data.index[0], plot_data.index[-1])
-    ax1.set_ylabel("Price")
-    theme.style_primary_axis(
-        ax1,
-        data_index=plot_data.index.to_list(),
-        tick_labels=plot_data["date"].to_list(),
-    )
-
-    ax2.set_xlim(plot_data.index[0], plot_data.index[-1])
-    ax2.set_ylabel("Volume [M]")
-    bar_colors = [
-        theme.down_color if x[1].Open < x[1].Close else theme.up_color
-        for x in plot_data.iterrows()
-    ]
-    ax2.bar(
-        plot_data.index,
-        plot_data["Adj Volume"],
-        color=bar_colors,
-        alpha=0.8,
-        width=theme.volume_bar_width,
-    )
-    theme.style_primary_axis(
-        ax2,
-        data_index=plot_data.index.to_list(),
-        tick_labels=plot_data["date"].to_list(),
-    )
-
-    ax3.set_ylabel("OBV [M]")
-    ax3.plot(plot_data.index, plot_data["Adj OBV"])
-    ax3.set_xlim(plot_data.index[0], plot_data.index[-1])
-    theme.style_primary_axis(
-        ax3,
-        data_index=plot_data.index.to_list(),
-        tick_labels=plot_data["date"].to_list(),
-    )
-
-    if external_axes is None:
-        theme.visualize_output()
+    close_col = ta_helpers.check_columns(data)
+    if close_col is None:
+        return None
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)).replace("common", "stocks"),
         "obv",
-        df_ta,
+        ta.df_ta,
+        sheet_name,
+        fig,
     )
+
+    return fig.show(external=external_axes)

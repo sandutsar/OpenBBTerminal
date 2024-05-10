@@ -1,99 +1,106 @@
 """ SEC View """
+
 __docformat__ = "numpy"
 
 import logging
 import os
-from typing import List, Optional
 from datetime import datetime, timedelta
+from typing import Optional
 
 import pandas as pd
-from matplotlib import pyplot as plt
 
-from openbb_terminal.config_terminal import theme
+from openbb_terminal import OpenBBFigure
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_funcs import (
-    export_data,
-    print_rich_table,
-    plot_autoscale,
-)
-from openbb_terminal.config_plot import PLOT_DPI
-from openbb_terminal.rich_config import console
+from openbb_terminal.helper_funcs import export_data, print_rich_table
+from openbb_terminal.stocks import stocks_helper
 from openbb_terminal.stocks.dark_pool_shorts import sec_model
 
 logger = logging.getLogger(__name__)
 
+# pylint: disable=too-many-arguments
+
 
 @log_start_end(log=logger)
 def fails_to_deliver(
-    ticker: str,
-    stock: pd.DataFrame,
-    start: datetime,
-    end: datetime,
-    num: int,
-    raw: bool,
+    symbol: str,
+    data: Optional[pd.DataFrame] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: int = 0,
+    raw: bool = False,
     export: str = "",
-    external_axes: Optional[List[plt.Axes]] = None,
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
 ):
     """Display fails-to-deliver data for a given ticker. [Source: SEC]
 
     Parameters
     ----------
-    ticker : str
+    symbol: str
         Stock ticker
-    stock : pd.DataFrame
+    data: pd.DataFrame
         Stock data
-    start : datetime
-        Start of data
-    end : datetime
-        End of data
-    num : int
+    start_date: Optional[str]
+        Start of data, in YYYY-MM-DD format
+    end_date: Optional[str]
+        End of data, in YYYY-MM-DD format
+    limit : int
         Number of latest fails-to-deliver being printed
-    raw : bool
+    raw: bool
         Print raw data
-    export : str
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
+    export: str
         Export dataframe data to csv,json,xlsx file
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (2 axis is expected in the list), by default None
-
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
-    ftds_data = sec_model.get_fails_to_deliver(ticker, start, end, num)
 
-    # This plot has 2 axis
-    if not external_axes:
-        _, ax1 = plt.subplots(figsize=plot_autoscale(), dpi=PLOT_DPI)
-        ax2 = ax1.twinx()
-    else:
-        if len(external_axes) != 2:
-            logger.error("Expected list of two axis items.")
-            console.print("[red]Expected list of two axis items./n[/red]")
-            return
-        (ax1, ax2) = external_axes
+    if start_date is None:
+        start_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
 
-    ax1.bar(
-        ftds_data["SETTLEMENT DATE"],
-        ftds_data["QUANTITY (FAILS)"] / 1000,
-        label="Fail Quantity",
+    if end_date is None:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+
+    if data is None:
+        data = stocks_helper.load(
+            symbol=symbol, start_date=start_date, end_date=end_date
+        )
+
+    ftds_data = sec_model.get_fails_to_deliver(symbol, start_date, end_date, limit)
+
+    fig = OpenBBFigure.create_subplots(
+        shared_xaxes=True, specs=[[{"secondary_y": True}]]
     )
-    ax1.set_ylabel("Shares [K]")
-    ax1.set_title(f"Fails-to-deliver Data for {ticker}")
-    ax1.legend(loc="lower right")
-
-    if num > 0:
-        stock_ftd = stock[stock.index > (datetime.now() - timedelta(days=num + 31))]
+    if limit > 0:
+        data_ftd = data[data.index > (datetime.now() - timedelta(days=limit + 31))]
     else:
-        stock_ftd = stock[stock.index > start]
-        stock_ftd = stock_ftd[stock_ftd.index < end]
+        data_ftd = data[data.index > start_date]
+        data_ftd = data_ftd[data_ftd.index < end_date]
 
-    ax2.plot(
-        stock_ftd.index, stock_ftd["Adj Close"], color="orange", label="Share Price"
+    fig.add_bar(
+        name="Fail Quantity",
+        x=ftds_data["SETTLEMENT DATE"],
+        y=ftds_data["QUANTITY (FAILS)"],
+        secondary_y=False,
     )
-    ax2.set_ylabel("Share Price [$]")
-    ax2.legend(loc="upper right")
-
-    theme.style_twin_axes(ax1, ax2)
-
-    if not external_axes:
-        theme.visualize_output()
+    fig.add_scatter(
+        name="Share Price",
+        x=data_ftd.index,
+        y=data_ftd["Adj Close"],
+        yaxis="y2",
+        line=dict(width=3),
+        opacity=1,
+        secondary_y=True,
+    )
+    fig.update_layout(
+        margin=dict(l=30, r=0, t=30, b=10),
+        yaxis2=dict(title="Share Price [$]", overlaying="y", nticks=20),
+        yaxis=dict(side="left", title="Shares [K]", showgrid=False),
+        title=f"Fails-to-deliver Data for {symbol}",
+        xaxis_title="Date",
+        legend=dict(yanchor="bottom", y=0, xanchor="right", x=0.95),
+    )
 
     if raw:
         print_rich_table(
@@ -101,12 +108,16 @@ def fails_to_deliver(
             headers=list(ftds_data.columns),
             show_index=False,
             title="Fails-To-Deliver Data",
+            export=bool(export),
         )
-        console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "ftd",
         ftds_data.reset_index(),
+        sheet_name,
+        fig,
     )
+
+    return fig.show(external=raw or external_axes)

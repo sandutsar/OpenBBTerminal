@@ -1,48 +1,33 @@
 """Quantitative Analysis View"""
+
 __docformat__ = "numpy"
 
-# pylint: disable=too-many-lines
+# pylint: disable=C0302
 
 
 import logging
 import os
 import warnings
 from datetime import datetime
-from typing import Any, Optional, List
+from typing import Any, Dict, List, Optional, Union
 
-import matplotlib
-import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
-import seaborn as sns
-import statsmodels.api as sm
-from scipy import stats
 from detecta import detect_cusum
-from statsmodels.graphics.gofplots import qqplot
 from pandas.plotting import register_matplotlib_converters
+from scipy import stats
+from statsmodels.graphics.gofplots import qqplot
 
-from openbb_terminal.config_terminal import theme
+from openbb_terminal import OpenBBFigure, theme
 from openbb_terminal.common.quantitative_analysis import qa_model
-from openbb_terminal.config_plot import PLOT_DPI
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_classes import LineAnnotateDrawer
-from openbb_terminal.helper_funcs import (
-    export_data,
-    plot_autoscale,
-    print_rich_table,
-    reindex_dates,
-    lambda_long_number_format,
-)
+from openbb_terminal.helper_funcs import export_data, print_rich_table
 from openbb_terminal.rich_config import console
 
 logger = logging.getLogger(__name__)
 
 register_matplotlib_converters()
-
-# TODO : Since these are common/ they should be independent of 'stock' info.
-# df_stock should be replaced with a generic df and a column variable
 
 
 def lambda_color_red(val: Any) -> str:
@@ -53,17 +38,19 @@ def lambda_color_red(val: Any) -> str:
 
 
 @log_start_end(log=logger)
-def display_summary(df: pd.DataFrame, export: str):
-    """Show summary statistics
+def display_summary(
+    data: pd.DataFrame, export: str = "", sheet_name: Optional[str] = None
+) -> None:
+    """Prints table showing summary statistics
 
     Parameters
     ----------
-    df_stock : pd.DataFrame
+    data : pd.DataFrame
         DataFrame to get statistics of
     export : str
         Format to export data
     """
-    summary = qa_model.get_summary(df)
+    summary = qa_model.get_summary(data)
 
     print_rich_table(
         summary,
@@ -71,133 +58,119 @@ def display_summary(df: pd.DataFrame, export: str):
         floatfmt=".3f",
         show_index=True,
         title="[bold]Summary Statistics[/bold]",
+        export=bool(export),
     )
-    console.print("")
+
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)).replace("common", "stocks"),
         "summary",
         summary,
+        sheet_name,
     )
 
 
 @log_start_end(log=logger)
 def display_hist(
-    name: str,
-    df: pd.DataFrame,
+    data: pd.DataFrame,
     target: str,
-    bins: int,
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Generate of histogram of data
+    symbol: str = "",
+    bins: int = 15,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots histogram of data
 
     Parameters
     ----------
-    name : str
-        Name of dataset
-    df : pd.DataFrame
+    data : pd.DataFrame
         Dataframe to look at
     target : str
         Data column to get histogram of the dataframe
+    symbol : str
+        Name of dataset
     bins : int
         Number of bins in histogram
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (1 axis is expected in the list), by default None
-    """
-    data = df[target]
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
 
-    # This plot has 1 axis
-    if external_axes is None:
-        _, ax = plt.subplots(
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> df = openbb.stocks.load("AAPL")
+    >>> openbb.qa.hist(data=df, target="Adj Close")
+    """
+
+    data = data[target]
+
+    fig = OpenBBFigure.create_subplots(1, 1, shared_yaxes=False)
+
+    if isinstance(data.index[0], datetime):
+        start = data.index[0]
+        fig.set_title(
+            f"Histogram of {symbol} {target} from {start.strftime('%Y-%m-%d')}"
         )
     else:
-        if len(external_axes) != 1:
-            logger.error("Expected list of one axis item.")
-            console.print("[red]Expected list of 1 axis items./n[/red]")
-            return
-        (ax,) = external_axes
+        fig.set_title(f"Histogram of {symbol} {target}")
 
-    sns.histplot(
+    fig.add_histplot(
         data,
-        color=theme.up_color,
+        name=["Univariate distribution", "Marginal distributions"],
+        colors=[theme.up_color],
         bins=bins,
-        kde=True,
-        ax=ax,
-        stat="proportion",
-        legend=True,
+        curve="kde",
     )
-    sns.rugplot(data, color=theme.down_color, ax=ax, legend=True)
 
-    if isinstance(df.index[0], datetime):
-        start = df.index[0]
-        ax.set_title(f"Histogram of {name} {target} from {start.strftime('%Y-%m-%d')}")
-    else:
-        ax.set_title(f"Histogram of {name} {target}")
-
-    ax.set_xlabel("Value")
-    theme.style_primary_axis(ax)
-
-    # Manually construct the chart legend
-    proportion_legend = mpatches.Patch(
-        color=theme.up_color, label="Univariate distribution"
+    fig.update_layout(
+        xaxis_title="Value",
+        margin=dict(r=40),
+        yaxis=dict(title="Proportion", title_standoff=40),
+        bargap=0.01,
+        bargroupgap=0,
     )
-    marginal_legend = mpatches.Patch(
-        color=theme.down_color, label="Marginal distributions"
+    fig.update_traces(
+        selector=dict(type="histogram"),
+        marker=dict(
+            color=theme.up_color,
+            line=dict(color="white", width=2.5),
+        ),
     )
-    ax.legend(handles=[proportion_legend, marginal_legend])
 
-    if external_axes is None:
-        theme.visualize_output()
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
 def display_cdf(
-    name: str,
-    df: pd.DataFrame,
+    data: pd.DataFrame,
     target: str,
+    symbol: str = "",
     export: str = "",
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Plot Cumulative Distribution Function
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots Cumulative Distribution Function
 
     Parameters
     ----------
-    name : str
-        Name of dataset
-    df : pd.DataFrame
+    data : pd.DataFrame
         Dataframe to look at
     target : str
         Data column
+    symbol : str
+        Name of dataset
     export : str
         Format to export data
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (1 axis is expected in the list), by default None
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> df = openbb.stocks.load("AAPL")
+    >>> openbb.qa.cdf(data=df, target="Adj Close")
     """
-    data = df[target]
-    start = df.index[0]
+    data = data[target]
+    start = data.index[0]
     cdf = data.value_counts().sort_index().div(len(data)).cumsum()
-
-    # This plot has 1 axis
-    if external_axes is None:
-        _, ax = plt.subplots(
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
-        )
-    else:
-        if len(external_axes) != 1:
-            logger.error("Expected list of one axis item.")
-            console.print("[red]Expected list of 1 axis items./n[/red]")
-            return
-        (ax,) = external_axes
-
-    cdf.plot(ax=ax)
-    ax.set_title(
-        f"Cumulative Distribution Function of {name} {target}\nfrom {start.strftime('%Y-%m-%d')}"
-    )
-    ax.set_ylabel("Probability")
-    ax.set_xlabel(target)
 
     minVal = data.values.min()
     q25 = np.quantile(data.values, 0.25)
@@ -206,124 +179,103 @@ def display_cdf(
     labels = [
         (minVal, q25),
         (0.25, 0.25),
-        theme.down_color,
+        "Q1",
         (q25, q25),
         (0, 0.25),
-        theme.down_color,
+        "Q1",
         (minVal, medianVal),
         (0.5, 0.5),
-        theme.down_color,
+        "Median",
         (medianVal, medianVal),
         (0, 0.5),
-        theme.down_color,
+        "Median",
         (minVal, q75),
         (0.75, 0.75),
-        theme.down_color,
+        "Q3",
         (q75, q75),
         (0, 0.75),
-        theme.down_color,
-    ]
-    ax.plot(*labels, ls="--")
-    ax.text(
-        minVal + (q25 - minVal) / 2,
-        0.27,
-        "Q1",
-        color=theme.down_color,
-        fontweight="bold",
-    )
-    ax.text(
-        minVal + (medianVal - minVal) / 2,
-        0.52,
-        "Median",
-        color=theme.down_color,
-        fontweight="bold",
-    )
-    ax.text(
-        minVal + (q75 - minVal) / 2,
-        0.77,
         "Q3",
-        color=theme.down_color,
-        fontweight="bold",
-    )
-    ax.set_xlim(cdf.index[0], cdf.index[-1])
-    theme.style_primary_axis(ax)
+    ]
 
-    if external_axes is None:
-        theme.visualize_output()
+    fig = OpenBBFigure(xaxis_title=target.title(), yaxis_title="Probability")
+    fig.set_title(
+        f"Cumulative Distribution Function of {symbol} {target} from {start.strftime('%Y-%m-%d')}"
+    )
+
+    fig.add_scatter(
+        x=cdf.index,
+        y=cdf.values,
+        name="Cumulative Distribution Function",
+        marker_color=theme.up_color,
+        mode="lines",
+    )
+
+    for xt, yt, label in zip(labels[::3], labels[1::3], labels[2::3]):
+        fig.add_annotation(
+            x=minVal + (xt[1] - minVal) / 2,
+            y=yt[1] + 0.04,
+            text=label,
+            font=dict(color=theme.down_color),
+        )
+        fig.add_shape(
+            type="line",
+            x0=xt[0],
+            y0=yt[0],
+            x1=xt[1],
+            y1=yt[1],
+            line=dict(color=theme.down_color, width=1.5, dash="dash"),
+        )
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)).replace("common", "stocks"),
         "cdf",
         pd.DataFrame(cdf),
+        sheet_name,
+        fig,
     )
+
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
 def display_bw(
-    name: str,
-    df: pd.DataFrame,
+    data: pd.DataFrame,
     target: str,
-    yearly: bool,
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Show box and whisker plots
+    symbol: str = "",
+    yearly: bool = True,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots box and whisker plots
 
     Parameters
     ----------
-    name : str
+    symbol : str
         Name of dataset
-    df : pd.DataFrame
+    data : pd.DataFrame
         Dataframe to look at
     target : str
         Data column to look at
     yearly : bool
         Flag to indicate yearly accumulation
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (1 axis is expected in the list), by default None
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> df = openbb.stocks.load("AAPL")
+    >>> openbb.qa.bw(data=df, target="Adj Close")
     """
-    data = df[target]
-    start = df.index[0]
+    data = data.copy()
+    start = data[target].index[0]
 
-    # This plot has 1 axis
-    if external_axes is None:
-        _, ax = plt.subplots(
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
-        )
-    else:
-        if len(external_axes) != 1:
-            logger.error("Expected list of one axis item.")
-            console.print("[red]Expected list of 1 axis items./n[/red]")
-            return
-        (ax,) = external_axes
+    colors = theme.get_colors()
+    color = colors[0]
+    pd.options.mode.chained_assignment = None
+    data["x_data"] = data[target].index.year if yearly else data[target].index.month
+    pd.options.mode.chained_assignment = "warn"
 
-    color = theme.get_colors()[0]
-    if yearly:
-        x_data = data.index.year
-    else:
-        x_data = data.index.month
-    box_plot = sns.boxplot(
-        x=x_data,
-        y=data,
-        ax=ax,
-        zorder=3,
-        boxprops=dict(edgecolor=color),
-        flierprops=dict(
-            linestyle="--",
-            color=color,
-            markerfacecolor=theme.up_color,
-            markeredgecolor=theme.up_color,
-        ),
-        whiskerprops=dict(color=color),
-        capprops=dict(color=color),
-    )
-
-    box_plot.set(
-        xlabel=["Monthly", "Yearly"][yearly],
-        ylabel=target,
-        title=f"{['Monthly','Yearly'][yearly]} box plot of {name} {target} from {start.strftime('%Y-%m-%d')}",
-    )
     l_months = [
         "Jan",
         "Feb",
@@ -338,176 +290,192 @@ def display_bw(
         "Nov",
         "Dec",
     ]
-    l_ticks = list()
-    if not yearly:
-        for val in box_plot.get_xticklabels():
-            l_ticks.append(l_months[int(val.get_text()) - 1])
-        box_plot.set_xticklabels(l_ticks)
 
-    # remove the scientific notion on the left hand side
-    ax.ticklabel_format(style="plain", axis="y")
-    ax.get_yaxis().set_major_formatter(
-        matplotlib.ticker.FuncFormatter(lambda x, _: lambda_long_number_format(x))
+    fig = OpenBBFigure(
+        title=(
+            f"{['Monthly','Yearly'][yearly]} box plot of {symbol.upper()} "
+            f"{target} from {start.strftime('%Y-%m-%d')}"
+        ),
+        yaxis_title=target,
+        xaxis_title=["Monthly", "Yearly"][yearly],
     )
 
-    theme.style_primary_axis(ax)
+    for i, group in enumerate(data["x_data"].unique()):
+        x = group if yearly else l_months[group - 1]
+        y = data[data["x_data"] == group][target]
 
-    if external_axes is None:
-        theme.visualize_output()
+        fig.add_box(
+            y=y,
+            x=[x] * len(y),
+            name=str(x),
+            marker=dict(
+                color=theme.up_color,
+                outliercolor=theme.up_color,
+            ),
+            fillcolor=colors[i % len(colors)],
+            line_color=color,
+            boxmean=True,
+            whiskerwidth=1,
+            boxpoints="suspectedoutliers",
+            hoveron="points",
+            showlegend=False,
+        )
+
+        fig.add_shape(
+            type="line",
+            x0=x,
+            y0=y.min(),
+            x1=x,
+            y1=y.max(),
+            line=dict(color=color, width=1.5, dash="dash"),
+        )
+
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
 def display_acf(
-    name: str,
-    df: pd.DataFrame,
+    data: pd.DataFrame,
     target: str,
-    lags: int,
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Show Auto and Partial Auto Correlation of returns and change in returns
+    symbol: str = "",
+    lags: int = 15,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots Auto and Partial Auto Correlation of returns and change in returns
 
     Parameters
     ----------
-    name : str
-        Name of dataset
-    df : pd.DataFrame
+    data : pd.DataFrame
         Dataframe to look at
     target : str
         Data column to look at
+    symbol : str
+        Name of dataset
     lags : int
         Max number of lags to look at
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (4 axes are expected in the list), by default None
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> df = openbb.stocks.load("AAPL")
+    >>> openbb.qa.acf(data=df, target="Adj Close")
     """
-    df = df[target]
-    start = df.index[0]
+    data = data[target]
+    start = data.index[0]
 
-    # This plot has 4 axes
-    if external_axes is None:
-        fig, axes = plt.subplots(
-            nrows=2,
-            ncols=2,
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
-        )
-        (ax1, ax2), (ax3, ax4) = axes
-    else:
-        if len(external_axes) != 4:
-            logger.error("Expected list of four axis items.")
-            console.print("[red]Expected list of 4 axis items./n[/red]")
-            return
-        (ax1, ax2, ax3, ax4) = external_axes
+    fig = OpenBBFigure.create_subplots(
+        rows=2,
+        cols=2,
+        shared_xaxes=False,
+        subplot_titles=[
+            f"{symbol} Returns Auto-Correlation",
+            f"{symbol} Returns Partial Auto-Correlation",
+            f"Change in {symbol} Returns Auto-Correlation",
+            f"Change in {symbol} Returns Partial Auto-Correlation",
+        ],
+        vertical_spacing=0.1,
+        horizontal_spacing=0.1,
+        x_title="Lag",
+    ).set_title(title=f"ACF differentials starting from {start.strftime('%Y-%m-%d')}")
 
-    # Diff Auto-correlation function for original time series
-    sm.graphics.tsa.plot_acf(np.diff(np.diff(df.values)), lags=lags, ax=ax1)
-    ax1.set_title(f"{name} Returns Auto-Correlation", fontsize=9)
-    # Diff Partial auto-correlation function for original time series
-    sm.graphics.tsa.plot_pacf(np.diff(np.diff(df.values)), lags=lags, ax=ax2)
-    ax2.set_title(
-        f"{name} Returns Partial Auto-Correlation",
-        fontsize=9,
-    )
+    kwargs = dict(marker=dict(color=theme.get_colors()[0]), line=dict(color="white"))
+    np_diff = np.diff(data.values)
 
+    # Diff Auto - correlation function for original time series
+    fig.add_corr_plot(np_diff, lags, row=1, col=1, **kwargs)  # type: ignore
+    # Diff Partial auto - correlation function for original time series
+    fig.add_corr_plot(np_diff, lags, row=1, col=2, pacf=True, method="ywm", **kwargs)  # type: ignore
     # Diff Diff Auto-correlation function for original time series
-    sm.graphics.tsa.plot_acf(np.diff(np.diff(df.values)), lags=lags, ax=ax3)
-    ax3.set_title(
-        f"Change in {name} Returns Auto-Correlation",
-        fontsize=9,
-    )
+    fig.add_corr_plot(np.diff(np_diff), lags, row=2, col=1, **kwargs)  # type: ignore
     # Diff Diff Partial auto-correlation function for original time series
-    sm.graphics.tsa.plot_pacf(np.diff(np.diff(df.values)), lags=lags, ax=ax4)
-    ax4.set_title(
-        f"Change in {name} Returns Partial Auto-Correlation",
-        fontsize=9,
+    fig.add_corr_plot(
+        np.diff(np_diff), lags, row=2, col=2, pacf=True, method="ywm", **kwargs  # type: ignore
     )
 
-    fig.suptitle(
-        f"ACF differentials starting from {start.strftime('%Y-%m-%d')}",
-        fontsize=15,
-        x=0.042,
-        y=0.95,
-        horizontalalignment="left",
-        verticalalignment="top",
-    )
-    theme.style_primary_axis(ax1)
-    theme.style_primary_axis(ax2)
-    theme.style_primary_axis(ax3)
-    theme.style_primary_axis(ax4)
-
-    if external_axes is None:
-        theme.visualize_output(force_tight_layout=True)
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
 def display_qqplot(
-    name: str,
-    df: pd.DataFrame,
+    data: pd.DataFrame,
     target: str,
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Show QQ plot for data against normal quantiles
+    symbol: str = "",
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots QQ plot for data against normal quantiles
 
     Parameters
     ----------
-    name : str
-        Stock ticker
-    df : pd.DataFrame
+    data : pd.DataFrame
         Dataframe
     target : str
         Column in data to look at
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (1 axis is expected in the list), by default None
+    symbol : str
+        Stock ticker
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> df = openbb.stocks.load("AAPL")
+    >>> openbb.qa.qqplot(data=df, target="Adj Close")
     """
     # Statsmodels has a UserWarning for marker kwarg-- which we don't use
     warnings.filterwarnings(category=UserWarning, action="ignore")
-    data = df[target]
+    data = data[target]
 
-    # This plot has 1 axis
-    if external_axes is None:
-        _, ax = plt.subplots(
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
-        )
-    else:
-        if len(external_axes) != 1:
-            logger.error("Expected list of one axis item.")
-            console.print("[red]Expected list of 1 axis items./n[/red]")
-            return
-        (ax,) = external_axes
-
-    qqplot(
-        data,
-        stats.distributions.norm,
-        fit=True,
-        line="45",
-        color=theme.down_color,
-        ax=ax,
+    fig = OpenBBFigure(
+        xaxis_title="Theoretical quantiles", yaxis_title="Sample quantiles"
     )
-    ax.get_lines()[1].set_color(theme.up_color)
+    fig.set_title(title=f"Q-Q plot for {symbol} {target}")
 
-    ax.set_title(f"Q-Q plot for {name} {target}")
-    ax.set_ylabel("Sample quantiles")
-    ax.set_xlabel("Theoretical quantiles")
+    qqplot_data = (
+        qqplot(
+            data,
+            stats.distributions.norm,
+            fit=True,
+            line="45",
+            color=theme.down_color,
+        )
+        .gca()
+        .lines
+    )
 
-    theme.style_primary_axis(ax)
+    fig.add_scatter(
+        x=qqplot_data[0].get_xdata(),
+        y=qqplot_data[0].get_ydata(),
+        mode="markers",
+        showlegend=False,
+    )
+    fig.add_scatter(
+        x=qqplot_data[1].get_xdata(),
+        y=qqplot_data[1].get_ydata(),
+        mode="lines",
+        line_color=theme.up_color,
+        showlegend=False,
+    )
 
-    if external_axes is None:
-        theme.visualize_output()
+    plt.close()
+
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
 def display_cusum(
-    df: pd.DataFrame,
+    data: pd.DataFrame,
     target: str,
-    threshold: float,
-    drift: float,
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Cumulative sum algorithm (CUSUM) to detect abrupt changes in data
+    threshold: float = 5,
+    drift: float = 2.1,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots Cumulative sum algorithm (CUSUM) to detect abrupt changes in data
 
     Parameters
     ----------
-    df : pd.DataFrame
+    data : pd.DataFrame
         Dataframe
     target : str
         Column of data to look at
@@ -515,14 +483,20 @@ def display_cusum(
         Threshold value
     drift : float
         Drift parameter
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (2 axes are expected in the list), by default None
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> df = openbb.stocks.load("AAPL")
+    >>> openbb.qa.cusum(data=df, target="Adj Close")
     """
-    target_series = df[target].values
+    target_series = data[target].values
 
     # The code for this plot was adapted from detecta's sources because at the
     # time of writing this detect_cusum had a bug related to external axes support.
-    # see https://github.com/demotu/detecta/pull/3
+    # see https:  // github.com/demotu/detecta/pull/3
     tap, tan = 0, 0
     ta, tai, taf, _ = detect_cusum(
         x=target_series,
@@ -546,216 +520,204 @@ def display_cusum(
             tai = np.append(tai, tap if gp[i] > threshold else tan)  # start
             gp[i], gn[i] = 0, 0  # reset alarm
 
-    if external_axes is None:
-        _, axes = plt.subplots(
-            2,
-            1,
-            sharex=True,
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
-        )
-        (ax1, ax2) = axes
-    else:
-        if len(external_axes) != 2:
-            logger.error("Expected list of two axis items.")
-            console.print("[red]Expected list of 2 axis items./n[/red]")
-            return
-        (ax1, ax2) = external_axes
+    fig = OpenBBFigure.create_subplots(
+        2,
+        1,
+        x_title="Data points",
+        subplot_titles=[
+            "Time series and detected changes "
+            + f"(threshold= {threshold:.3g}, drift= {drift:.3g}): N changes = {len(tai)}",
+            "Time series of the cumulative sums of positive and negative changes",
+        ],
+        vertical_spacing=0.1,
+    )
+    target_series_indexes = range(data[target].size)
+    fig.add_scatter(
+        x=[*target_series_indexes], y=target_series, showlegend=False, row=1, col=1
+    )
 
-    target_series_indexes = range(df[target].size)
-    ax1.plot(target_series_indexes, target_series)
     if len(ta):
-        ax1.plot(
-            tai,
-            target_series[tai],
-            ">",
-            markerfacecolor=theme.up_color,
-            markersize=5,
-            label="Start",
+        fig.add_scatter(
+            x=tai,
+            y=target_series[tai],
+            mode="markers",
+            marker=dict(
+                color=theme.up_color,
+                size=8,
+                symbol="triangle-right",
+            ),
+            name="Start",
+            row=1,
+            col=1,
         )
-        ax1.plot(
-            taf,
-            target_series[taf],
-            "<",
-            markerfacecolor=theme.down_color,
-            markersize=5,
-            label="Ending",
+        fig.add_scatter(
+            x=taf,
+            y=target_series[taf],
+            mode="markers",
+            marker=dict(
+                color=theme.down_color,
+                size=8,
+                symbol="triangle-left",
+            ),
+            name="Ending",
+            row=1,
+            col=1,
         )
-        ax1.plot(
-            ta,
-            target_series[ta],
-            "o",
-            markerfacecolor=theme.get_colors()[-1],
-            markeredgecolor=theme.get_colors()[-2],
-            markeredgewidth=1,
-            markersize=3,
-            label="Alarm",
+        fig.add_scatter(
+            x=ta,
+            y=target_series[ta],
+            mode="markers",
+            marker=dict(
+                color=theme.get_colors()[-1],
+                size=5,
+                symbol="circle",
+                line=dict(
+                    color=theme.get_colors()[-2],
+                    width=1,
+                ),
+            ),
+            name="Alarm",
+            row=1,
+            col=1,
         )
-        ax1.legend()
-    ax1.set_xlim(-0.01 * target_series.size, target_series.size * 1.01 - 1)
-    ax1.set_ylabel("Amplitude")
-    ymin, ymax = (
-        target_series[np.isfinite(target_series)].min(),
-        target_series[np.isfinite(target_series)].max(),
-    )
-    y_range = ymax - ymin if ymax > ymin else 1
-    ax1.set_ylim(ymin - 0.1 * y_range, ymax + 0.1 * y_range)
-    ax1.set_title(
-        "Time series and detected changes "
-        + f"(threshold= {threshold:.3g}, drift= {drift:.3g}): N changes = {len(tai)}",
-        fontsize=10,
-    )
-    theme.style_primary_axis(ax1)
+    fig.set_yaxis_title("Amplitude", row=1, col=1)
 
-    ax2.plot(target_series_indexes, gp, label="+")
-    ax2.plot(target_series_indexes, gn, label="-")
-    ax2.set_xlim(-0.01 * target_series.size, target_series.size * 1.01 - 1)
-    ax2.set_xlabel("Data points")
-    ax2.set_ylim(-0.01 * threshold, 1.1 * threshold)
-    ax2.axhline(threshold)
-    theme.style_primary_axis(ax2)
-
-    ax2.set_title(
-        "Time series of the cumulative sums of positive and negative changes",
-        fontsize=10,
+    fig.add_scatter(
+        x=[*target_series_indexes],
+        y=gp,
+        mode="lines",
+        name="+",
+        row=2,
+        col=1,
+        line=dict(color=theme.get_colors()[0]),
     )
-    ax2.legend()
+    fig.add_scatter(
+        x=[*target_series_indexes],
+        y=gn,
+        mode="lines",
+        name="-",
+        row=2,
+        col=1,
+        line=dict(color=theme.get_colors()[1]),
+    )
+    fig.add_hline(threshold, row=2, col=1)
+    fig.update_yaxes(
+        position=0.0, row=2, col=1, range=[0, max(gp.max(), gn.max(), threshold) * 1.1]
+    )
 
-    if external_axes is None:
-        theme.visualize_output()
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
 def display_seasonal(
-    name: str,
-    df: pd.DataFrame,
+    symbol: str,
+    data: pd.DataFrame,
     target: str,
     multiplicative: bool = False,
     export: str = "",
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Display seasonal decomposition data
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots seasonal decomposition data
 
     Parameters
     ----------
-    name : str
+    symbol : str
         Name of dataset
-    df : pd.DataFrame
+    data : pd.DataFrame
         DataFrame
     target : str
         Column of data to look at
     multiplicative : bool
         Boolean to indicate multiplication instead of addition
     export : str
-        Format to export trend and cycle df
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (6 axes are expected in the list), by default None
+        Format to export trend and cycle data
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
-    data = df[target]
+    data = data[target]
     result, cycle, trend = qa_model.get_seasonal_decomposition(data, multiplicative)
 
-    plot_data = pd.merge(
-        data,
-        result.trend,
-        how="outer",
-        left_index=True,
-        right_index=True,
-        suffixes=("", "_result.trend"),
-    )
-    plot_data = pd.merge(
-        plot_data,
-        result.seasonal,
-        how="outer",
-        left_index=True,
-        right_index=True,
-        suffixes=("", "_result.seasonal"),
-    )
-    plot_data = pd.merge(
-        plot_data,
-        result.resid,
-        how="outer",
-        left_index=True,
-        right_index=True,
-        suffixes=("", "_result.resid"),
-    )
-    plot_data = pd.merge(
-        plot_data,
-        cycle,
-        how="outer",
-        left_index=True,
-        right_index=True,
-        suffixes=("", "_cycle"),
-    )
-    plot_data = pd.merge(
-        plot_data,
-        trend,
-        how="outer",
-        left_index=True,
-        right_index=True,
-        suffixes=("", "_trend"),
-    )
-    plot_data = reindex_dates(plot_data)
-
-    # This plot has 1 axis
-    if external_axes is None:
-        fig, axes = plt.subplots(
-            4,
-            1,
-            sharex=True,
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
+    plot_data = data.copy()
+    for rmerge, suffix in zip(
+        [result.trend, result.seasonal, result.resid, cycle, trend],
+        ["_result.trend", "_result.seasonal", "_result.resid", "_cycle", "_trend"],
+    ):
+        plot_data = pd.merge(
+            plot_data,
+            rmerge,
+            how="outer",
+            left_index=True,
+            right_index=True,
+            suffixes=("", suffix),
         )
-        (ax1, ax2, ax3, ax4) = axes
-    else:
-        if len(external_axes) != 4:
-            logger.error("Expected list of four axis items.")
-            console.print("[red]Expected list of 4 axis items./n[/red]")
-            return
-        (ax1, ax2, ax3, ax4) = external_axes
-
-    colors = iter(theme.get_colors())
-
-    ax1.set_title(f"{name} (Time-Series) {target} seasonal decomposition")
-    ax1.plot(
-        plot_data.index, plot_data[target].values, color=next(colors), label="Values"
-    )
-    ax1.set_xlim([plot_data.index[0], plot_data.index[-1]])
-    ax1.legend()
 
     # Multiplicative model
-    ax2.plot(plot_data["trend"], color=theme.down_color, label="Cyclic-Trend")
-    ax2.plot(
-        plot_data["trend_cycle"],
-        color=theme.up_color,
-        linestyle="--",
-        label="Cycle component",
+    fig = OpenBBFigure.create_subplots(4, 1, vertical_spacing=0.06)
+    fig.set_title(f"{symbol} (Time-Series) {target} seasonal decomposition")
+    colors = iter(theme.get_colors())
+
+    fig.add_scatter(
+        x=plot_data.index,
+        y=plot_data[target],
+        name="Values",
+        line_color=next(colors),
+        legend="legend",
+        row=1,
+        col=1,
     )
-    ax2.legend()
-
-    ax3.plot(plot_data["trend_trend"], color=next(colors), label="Trend component")
-    ax3.plot(plot_data["seasonal"], color=next(colors), label="Seasonal effect")
-    ax3.legend()
-
-    ax4.plot(plot_data["resid"], color=next(colors), label="Residuals")
-    ax4.legend()
-
-    theme.style_primary_axis(ax1)
-    theme.style_primary_axis(ax2)
-    theme.style_primary_axis(ax3)
-    theme.style_primary_axis(
-        ax4,
-        data_index=plot_data.index.to_list(),
-        tick_labels=plot_data["date"].to_list(),
-    )
-
-    if external_axes is None:
-        fig.tight_layout(pad=theme.tight_layout_padding)
-        fig.subplots_adjust(
-            hspace=0.1,
+    for i, (column, name) in enumerate(
+        zip(
+            [("trend", "trend_cycle"), ("trend_trend", "seasonal")],
+            [
+                ("Cyclic-Trend", "Cycle component"),
+                ("Trend component", "Seasonal effect"),
+            ],
         )
-        theme.visualize_output(force_tight_layout=False)
+    ):
+        for j in range(2):
+            fig.add_scatter(
+                x=plot_data.index,
+                y=plot_data[column[j]],
+                name=name[j],
+                line_color=next(colors) if i != 0 else theme.down_color,
+                legend=f"legend{i + 2}",
+                row=i + 2,
+                col=1,
+            )
 
-    # From  # https://otexts.com/fpp2/seasonal-strength.html
+    fig.add_scatter(
+        x=plot_data.index,
+        y=plot_data["resid"],
+        name="Residuals",
+        line_color=next(colors),
+        legend="legend4",
+        row=4,
+        col=1,
+    )
+
+    legend_defaults = dict(
+        xanchor="left",
+        yanchor="top",
+        xref="paper",
+        yref="paper",
+        font=dict(size=13),
+        bgcolor="rgba(0, 0, 0, 0.4)",
+    )
+    fig.update_traces(selector=dict(name="Cyclic-Trend"), line_color=theme.down_color)
+    fig.update_traces(
+        selector=dict(name="Cycle component"),
+        line=dict(color=theme.up_color, dash="dash"),
+    )
+    fig.update_yaxes(nticks=5)
+    fig.update_layout(
+        legend=dict(**legend_defaults),
+        legend2=dict(x=0.01, y=0.73, **legend_defaults),
+        legend3=dict(x=0.01, y=0.46, **legend_defaults),
+        legend4=dict(x=0.01, y=0.20, **legend_defaults),
+    )
+
+    # From #https:  // otexts.com/fpp2/seasonal-strength.html
     console.print("Time-Series Level is " + str(round(data.mean(), 2)))
 
     Ft = max(0, 1 - np.var(result.resid)) / np.var(result.trend + result.resid)
@@ -772,23 +734,29 @@ def display_seasonal(
         os.path.dirname(os.path.abspath(__file__)).replace("common", "stocks"),
         "summary",
         cycle.join(trend),
+        sheet_name,
+        fig,
     )
+
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
-def display_normality(df: pd.DataFrame, target: str, export: str = ""):
-    """View normality statistics
+def display_normality(
+    data: pd.DataFrame, target: str, export: str = "", sheet_name: Optional[str] = None
+) -> None:
+    """Prints table showing normality statistics
 
     Parameters
     ----------
-    df : pd.DataFrame
+    data : pd.DataFrame
         DataFrame
     target : str
         Column in data to look at
     export : str
         Format to export data
     """
-    data = df[target]
+    data = data[target]
     normal = qa_model.get_normality(data)
     stats1 = normal.copy().T
     stats1.iloc[:, 1] = stats1.iloc[:, 1].apply(lambda x: lambda_color_red(x))
@@ -799,98 +767,119 @@ def display_normality(df: pd.DataFrame, target: str, export: str = ""):
         headers=["Statistic", "p-value"],
         floatfmt=".4f",
         title="[bold]Normality Statistics[/bold]",
+        export=bool(export),
     )
-    console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)).replace("common", "stocks"),
         "normality",
         normal,
+        sheet_name,
     )
 
 
 @log_start_end(log=logger)
 def display_unitroot(
-    df: pd.DataFrame, target: str, fuller_reg: str, kpss_reg: str, export: str = ""
+    data: pd.DataFrame,
+    target: str,
+    fuller_reg: str = "c",
+    kpss_reg: str = "c",
+    export: str = "",
+    sheet_name: Optional[str] = None,
 ):
-    """Show unit root test calculations
+    """Prints table showing unit root test calculations
 
     Parameters
     ----------
-    df : pd.DataFrame
+    data : pd.DataFrame
         DataFrame
     target : str
         Column of data to look at
     fuller_reg : str
-        Type of regression of ADF test
+        Type of regression of ADF test. Can be ‘c’,’ct’,’ctt’,’nc’ 'c' - Constant and t - trend order
     kpss_reg : str
-        Type of regression for KPSS test
+        Type of regression for KPSS test. Can be ‘c’,’ct'
     export : str
         Format for exporting data
     """
-    df = df[target]
-    data = qa_model.get_unitroot(df, fuller_reg, kpss_reg)
+    data = data[target]
+    data = qa_model.get_unitroot(data, fuller_reg, kpss_reg)
     print_rich_table(
         data,
         show_index=True,
         headers=list(data.columns),
         title="[bold]Unit Root Calculation[/bold]",
         floatfmt=".4f",
+        export=bool(export),
     )
-    console.print("")
+
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)).replace("common", "stocks"),
         "unitroot",
         data,
+        sheet_name,
     )
 
 
 @log_start_end(log=logger)
 def display_raw(
-    df: pd.DataFrame, sort: str = "", des: bool = False, num: int = 20, export: str = ""
+    data: pd.DataFrame,
+    sortby: str = "",
+    ascend: bool = False,
+    limit: int = 20,
+    export: str = "",
+    sheet_name: Optional[str] = None,
 ) -> None:
-    """Return raw stock data
+    """Prints table showing raw stock data
 
     Parameters
     ----------
-    df : DataFrame
+    data : DataFrame
         DataFrame with historical information
-    sort : str
+    sortby : str
         The column to sort by
-    des : bool
+    ascend : bool
         Whether to sort descending
-    num : int
+    limit : int
         Number of rows to show
     export : str
         Export data as CSV, JSON, XLSX
     """
 
-    export_data(
-        export,
-        os.path.dirname(os.path.abspath(__file__)),
-        "history",
-        df,
-    )
+    df1 = pd.DataFrame(data) if isinstance(data, pd.Series) else data.copy()
 
-    if isinstance(df, pd.Series):
-        df1 = pd.DataFrame(df)
+    if sortby:
+        sortby = sortby.replace("_", " ")
+        try:
+            sort_col = [x.lower().replace(" ", "") for x in df1.columns].index(
+                sortby.lower().replace(" ", "")
+            )
+        except ValueError:
+            console.print("[red]The provided column is not a valid option[/red]\n")
+            return
+        df1 = df1.sort_values(by=data.columns[sort_col], ascending=ascend)
     else:
-        df1 = df.copy()
+        df1 = df1.sort_index(ascending=ascend)
 
-    if sort:
-        df1 = df.sort_values(by=sort, ascending=des)
-    df1.index = [x.strftime("%Y-%m-%d") for x in df.index]
     print_rich_table(
-        df1.tail(num),
+        df1,
         headers=[x.title() if x != "" else "Date" for x in df1.columns],
         title="[bold]Raw Data[/bold]",
         show_index=True,
         floatfmt=".3f",
+        export=bool(export),
+        limit=limit,
     )
 
-    console.print("")
+    export_data(
+        export,
+        os.path.dirname(os.path.abspath(__file__)),
+        "raw",
+        data,
+        sheet_name,
+    )
 
 
 @log_start_end(log=logger)
@@ -898,12 +887,12 @@ def display_line(
     data: pd.Series,
     title: str = "",
     log_y: bool = True,
-    draw: bool = False,
     markers_lines: Optional[List[datetime]] = None,
     markers_scatter: Optional[List[datetime]] = None,
     export: str = "",
-    external_axes: Optional[List[plt.Axes]] = None,
-):
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
     """Display line plot of data
 
     Parameters
@@ -914,177 +903,179 @@ def display_line(
         Title for plot
     log_y: bool
         Flag for showing y on log scale
-    draw: bool
-        Flag for drawing lines and annotating on the plot
     markers_lines: Optional[List[datetime]]
         List of dates to highlight using vertical lines
     markers_scatter: Optional[List[datetime]]
         List of dates to highlight using scatter
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
     export: str
         Format to export data
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (1 axis is expected in the list), by default None
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> df = openbb.stocks.load("AAPL")
+    >>> openbb.qa.line(data=df["Adj Close"])
     """
-    # This plot has 1 axis
-    if external_axes is None:
-        _, ax = plt.subplots(
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
-        )
-    else:
-        if len(external_axes) != 1:
-            logger.error("Expected list of one axis item.")
-            console.print("[red]Expected list of 1 axis items./n[/red]")
-            return
-        (ax,) = external_axes
+
+    fig = OpenBBFigure(yaxis_title=data.name)
 
     if log_y:
-        ax.semilogy(data.index, data.values)
-        ax.yaxis.set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax.yaxis.set_major_locator(
-            matplotlib.ticker.LogLocator(base=100, subs=[1.0, 2.0, 5.0, 10.0])
+        fig.add_scatter(
+            x=data.index,
+            y=data.values,
+            name="",
+            mode="lines",
+            showlegend=False,
         )
-        ax.ticklabel_format(style="plain", axis="y")
+        fig.update_layout(yaxis_type="log")
 
     else:
-        ax.plot(data.index, data.values)
+        fig.add_scatter(
+            x=data.index,
+            y=data.values,
+            name="",
+            mode="lines",
+            showlegend=False,
+        )
 
         if markers_lines:
-            ymin, ymax = ax.get_ylim()
-            ax.vlines(markers_lines, ymin, ymax, color="#00AAFF")
+            for marker_date in markers_lines:
+                fig.add_vline(x=marker_date, line=dict(color=theme.up_color, width=2))
 
         if markers_scatter:
+            scatter: Dict[str, list] = dict(x=[], y=[])
             for n, marker_date in enumerate(markers_scatter):
                 price_location_idx = data.index.get_loc(marker_date, method="nearest")
                 # algo to improve text placement of highlight event number
                 if (
-                    0 < price_location_idx < (len(data) - 1)
+                    price_location_idx > 0
                     and data.iloc[price_location_idx - 1]
-                    > data.iloc[price_location_idx]
-                    and data.iloc[price_location_idx + 1]
                     > data.iloc[price_location_idx]
                 ):
                     text_loc = (0, -20)
                 else:
                     text_loc = (0, 10)
-                ax.annotate(
-                    str(n + 1),
-                    (mdates.date2num(marker_date), data.iloc[price_location_idx]),
-                    xytext=text_loc,
-                    textcoords="offset points",
-                )
-                ax.scatter(
-                    marker_date,
-                    data.iloc[price_location_idx],
-                    color="#00AAFF",
-                    s=100,
-                )
 
-    data_type = data.name
-    ax.set_ylabel(data_type)
-    ax.set_xlim(data.index[0], data.index[-1])
-    ax.ticklabel_format(style="plain", axis="y")
-    ax.get_yaxis().set_major_formatter(
-        matplotlib.ticker.FuncFormatter(lambda x, _: lambda_long_number_format(x))
-    )
+                fig.add_annotation(
+                    x=marker_date,
+                    y=data.iloc[price_location_idx],
+                    text=str(n + 1),
+                    xshift=text_loc[0],
+                    yshift=text_loc[1],
+                )
+                scatter["x"].append(marker_date.strftime("%Y-%m-%d"))
+                scatter["y"].append(data.iloc[price_location_idx])
+
+            fig.add_scatter(
+                x=scatter["x"],
+                y=scatter["y"],
+                mode="markers",
+                marker=dict(
+                    size=12,
+                    color=theme.up_color,
+                    line=dict(
+                        width=2,
+                        color=theme.up_color,
+                    ),
+                ),
+            )
 
     if title:
-        ax.set_title(title)
-    if draw:
-        LineAnnotateDrawer(ax).draw_lines_and_annotate()
-
-    theme.style_primary_axis(ax)
-
-    if external_axes is None:
-        theme.visualize_output()
+        fig.set_title(title)
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)).replace("common", "stocks"),
         "line",
+        sheet_name=sheet_name,
+        figure=fig,
     )
+
+    return fig.show(external=external_axes)
 
 
 def display_var(
     data: pd.DataFrame,
-    ticker: str = "",
+    symbol: str = "",
     use_mean: bool = False,
     adjusted_var: bool = False,
     student_t: bool = False,
-    percentile: float = 0.999,
+    percentile: float = 99.9,
+    data_range: int = 0,
     portfolio: bool = False,
-):
-    """Displays VaR of dataframe
+) -> None:
+    """Prints table showing VaR of dataframe.
 
     Parameters
     ----------
     data: pd.Dataframe
-        stock dataframe
+        Data dataframe
     use_mean: bool
-        if one should use the stocks mean return
-    ticker: str
-        ticker of the stock
+        if one should use the data mean return
+    symbol: str
+        name of the data
     adjusted_var: bool
         if one should have VaR adjusted for skew and kurtosis (Cornish-Fisher-Expansion)
     student_t: bool
         If one should use the student-t distribution
     percentile: int
         var percentile
+    data_range: int
+        Number of rows you want to use VaR over
     portfolio: bool
         If the data is a portfolio
     """
-    var_list, hist_var_list = qa_model.get_var(
-        data, use_mean, adjusted_var, student_t, percentile, portfolio
-    )
 
-    str_hist_label = "Historical VaR:"
+    if data_range > 0:
+        df = qa_model.get_var(
+            data[-data_range:], use_mean, adjusted_var, student_t, percentile, portfolio
+        )
+    else:
+        df = qa_model.get_var(
+            data, use_mean, adjusted_var, student_t, percentile, portfolio
+        )
 
     if adjusted_var:
-        str_var_label = "Adjusted VaR:"
         str_title = "Adjusted "
     elif student_t:
-        str_var_label = "Student-t VaR"
         str_title = "Student-t "
     else:
-        str_var_label = "VaR:"
         str_title = ""
 
-    if ticker != "":
-        ticker += " "
-
-    data_dictionary = {str_var_label: var_list, str_hist_label: hist_var_list}
-    data = pd.DataFrame(
-        data_dictionary, index=["90.0%", "95.0%", "99.0%", f"{percentile*100}%"]
-    )
+    if symbol != "":
+        symbol += " "
 
     print_rich_table(
-        data,
+        df,
         show_index=True,
-        headers=list(data.columns),
-        title=f"[bold]{ticker}{str_title}Value at Risk[/bold]",
-        floatfmt=".4f",
+        headers=list(df.columns),
+        title=f"[bold]{symbol}{str_title}Value at Risk[/bold]",
+        floatfmt=".2f",
     )
-    console.print("")
 
 
 def display_es(
     data: pd.DataFrame,
-    ticker: str = "",
+    symbol: str = "",
     use_mean: bool = False,
     distribution: str = "normal",
-    percentile: float = 0.999,
+    percentile: float = 99.9,
     portfolio: bool = False,
-):
-    """Displays expected shortfall
+) -> None:
+    """Prints table showing expected shortfall.
 
     Parameters
     ----------
     data: pd.DataFrame
-        stock dataframe
+        Data dataframe
     use_mean:
-        if one should use the stocks mean return
-    ticker: str
-        ticker of the stock
+        if one should use the data mean return
+    symbol: str
+        name of the data
     distribution: str
         choose distribution to use: logistic, laplace, normal
     percentile: int
@@ -1092,38 +1083,117 @@ def display_es(
     portfolio: bool
         If the data is a portfolio
     """
-    es_list, hist_es_list = qa_model.get_es(
-        data, use_mean, distribution, percentile, portfolio
-    )
-
-    str_hist_label = "Historical ES:"
+    df = qa_model.get_es(data, use_mean, distribution, percentile, portfolio)
 
     if distribution == "laplace":
-        str_es_label = "Laplace ES:"
         str_title = "Laplace "
     elif distribution == "student_t":
-        str_es_label = "Student-t ES"
         str_title = "Student-t "
     elif distribution == "logistic":
-        str_es_label = "Logistic ES"
         str_title = "Logistic "
     else:
-        str_es_label = "ES:"
         str_title = ""
 
-    if ticker != "":
-        ticker += " "
-
-    data_dictionary = {str_es_label: es_list, str_hist_label: hist_es_list}
-    data = pd.DataFrame(
-        data_dictionary, index=["90.0%", "95.0%", "99.0%", f"{percentile*100}%"]
-    )
+    if symbol != "":
+        symbol += " "
 
     print_rich_table(
-        data,
+        df,
         show_index=True,
-        headers=list(data.columns),
-        title=f"[bold]{ticker}{str_title}Expected Shortfall[/bold]",
-        floatfmt=".4f",
+        headers=list(df.columns),
+        title=f"[bold]{symbol}{str_title}Expected Shortfall[/bold]",
+        floatfmt=".2f",
     )
-    console.print("")
+
+
+def display_sharpe(
+    data: pd.DataFrame, rfr: float = 0, window: float = 252, external_axes: bool = False
+) -> Union[OpenBBFigure, None]:
+    """Plots Calculated the sharpe ratio
+
+    Parameters
+    ----------
+    data: pd.DataFrame
+        selected dataframe column
+    rfr: float
+        risk free rate
+    window: float
+        length of the rolling window
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
+    """
+    sharpe_ratio = qa_model.get_sharpe(data, rfr, window)
+
+    data = sharpe_ratio[int(window - 1) :]
+
+    fig = OpenBBFigure(yaxis_title="Sharpe Ratio", xaxis_title="Date")
+    fig.set_title(f"Sharpe Ratio - over a {window} day window")
+
+    fig.add_scatter(x=data.index, y=data)
+
+    return fig.show(external=external_axes)
+
+
+def display_sortino(
+    data: pd.DataFrame,
+    target_return: float,
+    window: float,
+    adjusted: bool,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots the sortino ratio
+
+    Parameters
+    ----------
+    data: pd.DataFrame
+        selected dataframe
+    target_return: float
+        target return of the asset
+    window: float
+        length of the rolling window
+    adjusted: bool
+        adjust the sortino ratio
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
+    """
+    sortino_ratio = qa_model.get_sortino(data, target_return, window, adjusted)
+    str_adjusted = "Adjusted " if adjusted else ""
+
+    data = sortino_ratio[int(window - 1) :]
+
+    fig = OpenBBFigure(yaxis_title="Sortino Ratio", xaxis_title="Date")
+    fig.set_title(f"{str_adjusted}Sortino Ratio - over a {window} day window")
+
+    fig.add_scatter(x=data.index, y=data)
+
+    return fig.show(external=external_axes)
+
+
+def display_omega(
+    data: pd.DataFrame,
+    threshold_start: float = 0,
+    threshold_end: float = 1.5,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
+    """Plots the omega ratio
+
+    Parameters
+    ----------
+    data: pd.DataFrame
+        stock dataframe
+    threshold_start: float
+        annualized target return threshold start of plotted threshold range
+    threshold_end: float
+        annualized target return threshold end of plotted threshold range
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
+    """
+    df = qa_model.get_omega(data, threshold_start, threshold_end)
+
+    # Plotting
+    fig = OpenBBFigure(yaxis_title="Omega Ratio", xaxis_title="Threshold (%)")
+    fig.set_title(f"Omega Curve - over last {len(data)}'s period")
+
+    fig.add_scatter(x=df["threshold"], y=df["omega"], name="Omega Curve")
+
+    return fig.show(external=external_axes)

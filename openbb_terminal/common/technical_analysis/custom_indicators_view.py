@@ -1,134 +1,166 @@
 """Custom TA indicators"""
+
 __docformat__ = "numpy"
 
 import logging
 import os
-from typing import Optional, Union, List
+from typing import List, Optional, Union
 
-import matplotlib.pyplot as plt
 import pandas as pd
 
-from openbb_terminal.config_terminal import theme
-from openbb_terminal.common.technical_analysis import custom_indicators_model
-from openbb_terminal.config_plot import PLOT_DPI
+from openbb_terminal.common.technical_analysis import (
+    ta_helpers,
+)
+from openbb_terminal.core.plots.plotly_ta.ta_class import OpenBBFigure, PlotlyTA
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.helper_funcs import (
     export_data,
-    plot_autoscale,
     print_rich_table,
-    reindex_dates,
-    is_intraday,
 )
-from openbb_terminal.rich_config import console
 
 logger = logging.getLogger(__name__)
 
 
 @log_start_end(log=logger)
 def fibonacci_retracement(
-    ohlc: pd.DataFrame,
-    period: int = 120,
+    data: pd.DataFrame,
+    limit: int = 120,
     start_date: Optional[Union[str, None]] = None,
     end_date: Optional[Union[str, None]] = None,
-    s_ticker: str = "",
+    symbol: str = "",
     export: str = "",
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Calculate fibonacci retracement levels
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
+) -> Union[None, OpenBBFigure]:
+    """Plots Calculated fibonacci retracement levels
 
     Parameters
     ----------
-    ohlc: pd.DataFrame
-        Stock data
-    period: int
+    data: pd.DataFrame
+        OHLC data
+    limit: int
         Days to lookback
     start_date: Optional[str, None]
         User picked date for starting retracement
     end_date: Optional[str, None]
         User picked date for ending retracement
-    s_ticker:str
-        Stock ticker
+    symbol: str
+        Ticker symbol
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
     export: str
         Format to export data
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (2 axis is expected in the list), by default None
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> df = openbb.stocks.load(symbol="aapl")
+    >>> openbb.ta.fib_chart(data=df)
     """
-    (
-        df_fib,
-        min_date,
-        max_date,
-        min_pr,
-        max_pr,
-    ) = custom_indicators_model.calculate_fib_levels(ohlc, period, start_date, end_date)
+    data = pd.DataFrame(data)
+    data.index.name = "date"
 
-    levels = df_fib.Price
+    if ta_helpers.check_columns(data) is None:
+        return None
 
-    plot_data = reindex_dates(ohlc)
-
-    # This plot has 1 axes
-    if external_axes is None:
-        _, ax1 = plt.subplots(
-            figsize=plot_autoscale(),
-            dpi=PLOT_DPI,
-        )
-        ax2 = ax1.twinx()
-    else:
-        if len(external_axes) != 1:
-            logger.error("Expected list of one axis item.")
-            console.print("[red]Expected list of 1 axis item./n[/red]")
-            return
-        ax1, ax2 = external_axes
-
-    ax1.plot(plot_data["Adj Close"])
-
-    if is_intraday(ohlc):
-        date_format = "%b %d %H:%M"
-    else:
-        date_format = "%Y-%m-%d"
-    min_date_index = plot_data[
-        plot_data["date"] == min_date.strftime(date_format)
-    ].index
-    max_date_index = plot_data[
-        plot_data["date"] == max_date.strftime(date_format)
-    ].index
-    ax1.plot(
-        [min_date_index, max_date_index],
-        [min_pr, max_pr],
+    ta = PlotlyTA()
+    fig = ta.plot(
+        data,
+        dict(fib=dict(limit=limit, start_date=start_date, end_date=end_date)),
+        f"Fibonacci Support for {symbol.upper()}",
+        False,
+        volume=False,
     )
 
-    for i in levels:
-        ax1.axhline(y=i, alpha=0.5)
-
-    for i in range(6):
-        ax1.fill_between(plot_data.index, levels[i], levels[i + 1], alpha=0.15)
-
-    ax1.set_xlim(plot_data.index[0], plot_data.index[-1])
-    ax1.set_title(f"Fibonacci Support for {s_ticker.upper()}")
-    ax1.set_yticks(levels)
-    ax1.set_yticklabels([0, 0.235, 0.382, 0.5, 0.618, 0.65, 1])
-    theme.style_primary_axis(
-        ax1,
-        data_index=plot_data.index.to_list(),
-        tick_labels=plot_data["date"].to_list(),
-    )
-
-    ax2.set_ylim(ax1.get_ylim())
-    ax2.set_ylabel("Price")
-    theme.style_primary_axis(ax2)
-
-    if external_axes is None:
-        theme.visualize_output()
+    if not external_axes:
         print_rich_table(
-            df_fib,
+            ta.df_fib,
             headers=["Fib Level", "Price"],
             show_index=False,
             title="Fibonacci retracement levels",
+            export=bool(export),
         )
-        console.print("")
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)).replace("common", "stocks"),
         "fib",
-        df_fib,
+        ta.df_ta,
+        sheet_name,
+        fig,
     )
+
+    return fig.show(external=external_axes)
+
+
+@log_start_end(log=logger)
+def plot_multiple_indicators(
+    data: pd.DataFrame,
+    indicators: List[str],
+    symbol: str = "",
+    params: Optional[dict] = None,
+    export: str = "",
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
+) -> Union[None, OpenBBFigure]:
+    """Plots multiple technical analysis indicators
+
+    Parameters
+    ----------
+    data: pd.DataFrame
+        OHLC data
+    indicators: list
+        List of indicators to plot
+    symbol: str
+        Ticker symbol
+    window: List[int]
+        List of lengths for moving averages
+    export: str
+        Format to export data
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> df = openbb.stocks.load(symbol="aapl")
+    >>> openbb.ta.multi_chart(data=df, indicators=["macd", "rsi"])
+    """
+    data = pd.DataFrame(data)
+    data.index.name = "date"
+
+    if ta_helpers.check_columns(data) is None:
+        return None
+
+    indicators_dict: dict = {indicator: {} for indicator in indicators}
+    if params:
+        indicators_dict.update(params)
+
+    ta = PlotlyTA()
+
+    for ma in ta.ma_mode:
+        if ma in indicators_dict and not indicators_dict[ma].get("length", None):
+            indicators_dict[ma] = dict(length=[20, 50])
+
+    fig = ta.plot(
+        data,
+        indicators_dict,
+        f"{symbol.upper()} Technical Analysis",
+        False,
+        volume=False,
+    )
+
+    export_data(
+        export,
+        os.path.dirname(os.path.abspath(__file__)).replace("common", "stocks"),
+        "indicators",
+        ta.df_ta,
+        sheet_name,
+        fig,
+    )
+
+    return fig.show(external=external_axes)

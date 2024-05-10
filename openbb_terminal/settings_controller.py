@@ -1,306 +1,356 @@
 """Settings Controller Module"""
+
 __docformat__ = "numpy"
 
 # IMPORTATION STANDARD
 import argparse
 import logging
-from typing import List
+import os
+import os.path
+from pathlib import Path
+from typing import List, Optional, Union
 
 # IMPORTATION THIRDPARTY
-from dotenv import load_dotenv, set_key
-from prompt_toolkit.completion import NestedCompleter
+import pytz
+
+import openbb_terminal.core.session.hub_model as Hub
+from openbb_terminal import theme
 
 # IMPORTATION INTERNAL
-from openbb_terminal import config_plot as cfg_plot
-from openbb_terminal import feature_flags as obbff
-from openbb_terminal.core.config.constants import ENV_FILE
+from openbb_terminal.core.config.paths import (
+    I18N_DICT_LOCATION,
+    SETTINGS_ENV_FILE,
+    STYLES_DIRECTORY_REPO,
+)
+from openbb_terminal.core.session.constants import BackendEnvironment
+from openbb_terminal.core.session.current_user import (
+    get_current_user,
+    is_local,
+    set_preference,
+)
+from openbb_terminal.core.session.env_handler import write_to_dotenv
+from openbb_terminal.custom_prompt_toolkit import NestedCompleter
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_funcs import get_flair, parse_known_args_and_warn
+from openbb_terminal.helper_funcs import (
+    AVAILABLE_FLAIRS,
+    get_flair,
+    get_user_timezone_or_invalid,
+    parse_and_split_input,
+)
 from openbb_terminal.menu import session
 from openbb_terminal.parent_classes import BaseController
-from openbb_terminal.rich_config import console
+from openbb_terminal.rich_config import RICH_TAGS, MenuText, console
 
 # pylint: disable=too-many-lines,no-member,too-many-public-methods,C0302
-# pylint:disable=import-outside-toplevel
+# pylint: disable=import-outside-toplevel
 
 logger = logging.getLogger(__name__)
-
-if ENV_FILE.is_file():
-    load_dotenv(ENV_FILE)
 
 
 class SettingsController(BaseController):
     """Settings Controller class"""
 
     CHOICES_COMMANDS: List[str] = [
-        "logcollection",
-        "tab",
-        "cls",
-        "color",
-        "flair",
+        "chart",
+        "colors",
         "dt",
-        "ion",
-        "watermark",
-        "cmdloc",
-        "promptkit",
-        "predict",
-        "autoscaling",
-        "thoughts",
-        "reporthtml",
-        "exithelp",
-        "rcontext",
-        "rich",
-        "richpanel",
-        "dpi",
-        "backend",
+        "flair",
         "height",
+        "lang",
+        "table",
+        "tz",
+        "userdata",
         "width",
-        "pheight",
-        "pwidth",
-        "monitor",
     ]
+    if is_local():
+        CHOICES_COMMANDS.append("source")
     PATH = "/settings/"
+    CHOICES_GENERATION = True
 
-    def __init__(self, queue: List[str] = None):
+    languages_available = [
+        lang.strip(".yml")
+        for lang in os.listdir(I18N_DICT_LOCATION)
+        if lang.endswith(".yml")
+    ]
+
+    def __init__(
+        self, queue: Optional[List[str]] = None, env_file: str = str(SETTINGS_ENV_FILE)
+    ):
         """Constructor"""
         super().__init__(queue)
+        self.env_file = env_file
 
-        if session and obbff.USE_PROMPT_TOOLKIT:
-            choices: dict = {c: {} for c in self.controller_choices}
+        if session and get_current_user().preferences.USE_PROMPT_TOOLKIT:
+            choices: dict = self.choices_default
+            choices["tz"] = {c: None for c in pytz.all_timezones}
+            choices["lang"] = {c: None for c in self.languages_available}
+            choices["flair"]["--emoji"] = {c: None for c in AVAILABLE_FLAIRS}
+            choices["flair"]["-e"] = "--emoji"
+
+            self.choices = choices
             self.completer = NestedCompleter.from_nested_dict(choices)
+
+        self.sort_filter = r"((tz\ -t |tz ).*?("
+        for tz in pytz.all_timezones:
+            clean_tz = tz.replace("/", r"\/")
+            self.sort_filter += f"{clean_tz}|"
+        self.sort_filter += ")*)"
+
+        self.PREVIEW = ", ".join(
+            [
+                f"[{tag}]{tag}[/{tag}]"
+                for tag in sorted(
+                    set(
+                        name.replace("[", "").replace("]", "").replace("/", "")
+                        for name in RICH_TAGS
+                    )
+                )
+            ]
+        )
+
+    def parse_input(self, an_input: str) -> List:
+        """Parse controller input
+
+        Overrides the parent class function to handle github org/repo path convention.
+        See `BaseController.parse_input()` for details.
+        """
+        # Filtering out
+        sort_filter = self.sort_filter
+
+        custom_filters = [sort_filter]
+
+        commands = parse_and_split_input(
+            an_input=an_input, custom_filters=custom_filters
+        )
+        return commands
 
     def print_help(self):
         """Print help"""
-        help_text = "\n[info]Feature flags through environment variables:[/info]\n\n"
-        color = "green" if obbff.LOG_COLLECTION else "red"
-        help_text += f"   [{color}]logcollection    allow logs to be sent[/{color}]\n\n"
-        color = "green" if obbff.USE_TABULATE_DF else "red"
-        help_text += (
-            f"   [{color}]tab              use tabulate to print dataframes[/{color}]\n"
+        current_user = get_current_user()
+
+        mt = MenuText("settings/")
+        mt.add_info("_info_")
+        mt.add_raw("\n")
+        mt.add_setting("dt", current_user.preferences.USE_DATETIME)
+        mt.add_raw("\n")
+        mt.add_cmd("chart")
+        mt.add_raw("\n")
+        mt.add_param("_chart", current_user.preferences.CHART_STYLE)
+        mt.add_raw("\n")
+        mt.add_cmd("table")
+        mt.add_raw("\n")
+        mt.add_param("_table", current_user.preferences.TABLE_STYLE)
+        mt.add_raw("\n")
+        mt.add_cmd("colors")
+        mt.add_raw("\n")
+        mt.add_param(
+            "_colors", f"{current_user.preferences.RICH_STYLE} -> {self.PREVIEW}"
         )
-        color = "green" if obbff.USE_CLEAR_AFTER_CMD else "red"
-        help_text += (
-            f"   [{color}]cls              clear console after each command[/{color}]\n"
+        mt.add_raw("\n")
+        mt.add_cmd("flair")
+        mt.add_raw("\n")
+        mt.add_param("_flair", get_flair())
+        mt.add_raw("\n")
+        mt.add_cmd("lang")
+        mt.add_raw("\n")
+        mt.add_param("_language", current_user.preferences.USE_LANGUAGE)
+        mt.add_raw("\n")
+        mt.add_cmd("userdata")
+        mt.add_raw("\n")
+        mt.add_param(
+            "_user_data_folder",
+            current_user.preferences.USER_DATA_DIRECTORY,
         )
-        color = "green" if obbff.USE_COLOR else "red"
-        help_text += f"   [{color}]color            use coloring features[/{color}]\n"
-        color = "green" if obbff.USE_PROMPT_TOOLKIT else "red"
-        help_text += f"   [{color}]promptkit        enable prompt toolkit (autocomplete and history)[/{color}]\n"
-        color = "green" if obbff.ENABLE_PREDICT else "red"
-        help_text += f"   [{color}]predict          prediction features[/{color}]\n"
-        color = "green" if obbff.ENABLE_THOUGHTS_DAY else "red"
-        help_text += f"   [{color}]thoughts         thoughts of the day[/{color}]\n"
-        color = "green" if obbff.OPEN_REPORT_AS_HTML else "red"
-        help_text += f"   [{color}]reporthtml       open report as HTML otherwise notebook[/{color}]\n"
-        color = "green" if obbff.ENABLE_EXIT_AUTO_HELP else "red"
-        help_text += f"   [{color}]exithelp         automatically print help when quitting menu[/{color}]\n"
-        color = "green" if obbff.REMEMBER_CONTEXTS else "red"
-        help_text += f"   [{color}]rcontext         remember contexts loaded params during session[/{color}]\n"
-        color = "green" if obbff.ENABLE_RICH else "red"
-        help_text += f"   [{color}]rich             colorful rich terminal[/{color}]\n"
-        color = "green" if obbff.ENABLE_RICH_PANEL else "red"
-        help_text += (
-            f"   [{color}]richpanel        colorful rich terminal panel[/{color}]\n"
-        )
-        color = "green" if obbff.USE_ION else "red"
-        help_text += (
-            f"   [{color}]ion              interactive matplotlib mode[/{color}]\n"
-        )
-        color = "green" if obbff.USE_WATERMARK else "red"
-        help_text += f"   [{color}]watermark        watermark in figures[/{color}]\n"
-        color = "green" if obbff.USE_CMD_LOCATION_FIGURE else "red"
-        help_text += f"   [{color}]cmdloc           command location displayed in figures[/{color}]\n"
-        color = "green" if obbff.USE_PLOT_AUTOSCALING else "red"
-        help_text += f"   [{color}]autoscaling      plot autoscaling[/{color}]\n\n"
-        color = "green" if obbff.USE_DATETIME else "red"
-        help_text += f"   [{color}]dt               add date and time to command line[/{color}]\n"
-        help_text += "[cmds]   flair            console flair[/cmds]\n\n"
-        help_text += f"[param]USE_FLAIR:[/param]  {get_flair()}\n\n[cmds]"
-        help_text += "   dpi              dots per inch\n"
-        help_text += (
-            "   backend          plotting backend (None, tkAgg, MacOSX, Qt5Agg)\n"
-        )
-        help_text += "[unvl]" if obbff.USE_PLOT_AUTOSCALING else ""
-        help_text += "   height           select plot height\n"
-        help_text += "   width            select plot width\n"
-        help_text += "[/unvl]" if obbff.USE_PLOT_AUTOSCALING else ""
-        help_text += "[unvl]" if not obbff.USE_PLOT_AUTOSCALING else ""
-        help_text += "   pheight          select plot percentage height\n"
-        help_text += "   pwidth           select plot percentage width\n"
-        help_text += (
-            "   monitor          which monitor to display (primary: 0, secondary: 1)\n"
-        )
-        help_text += "[/unvl]" if not obbff.USE_PLOT_AUTOSCALING else ""
-        help_text += "[/cmds]\n"
-        help_text += f"[param]PLOT_DPI:[/param]                 {cfg_plot.PLOT_DPI}\n"
-        help_text += f"[param]BACKEND:[/param]                  {cfg_plot.BACKEND}\n"
-        help_text += (
-            f"[param]PLOT_HEIGHT:[/param]              {cfg_plot.PLOT_HEIGHT}\n"
-        )
-        help_text += f"[param]PLOT_WIDTH:[/param]               {cfg_plot.PLOT_WIDTH}\n"
-        help_text += f"[param]PLOT_HEIGHT_PERCENTAGE:[/param]   {cfg_plot.PLOT_HEIGHT_PERCENTAGE}%\n"
-        help_text += f"[param]PLOT_WIDTH_PERCENTAGE:[/param]    {cfg_plot.PLOT_WIDTH_PERCENTAGE}%\n"
-        help_text += f"[param]MONITOR:[/param]                  {cfg_plot.MONITOR}\n"
+        mt.add_raw("\n")
+        mt.add_cmd("tz")
+        mt.add_raw("\n")
+        mt.add_param("_timezone", get_user_timezone_or_invalid())
+        mt.add_raw("\n")
+        mt.add_cmd("height")
+        mt.add_cmd("width")
+        mt.add_raw("\n")
+        mt.add_param("_plot_height", current_user.preferences.PLOT_PYWRY_HEIGHT, 12)
+        mt.add_param("_plot_width", current_user.preferences.PLOT_PYWRY_WIDTH, 12)
+        mt.add_raw("\n")
+        if is_local():
+            mt.add_cmd("source")
+            mt.add_raw("\n")
+            mt.add_param(
+                "_data_source",
+                get_current_user().preferences.USER_DATA_SOURCES_FILE,
+            )
+            mt.add_raw("\n")
+        console.print(text=mt.menu_text, menu="Settings")
 
-        # color = "green" if obbff.USE_FLAIR else "red"
-        # help_text += f"   [{color}]cls        clear console after each command[/{color}]\n"
+    @staticmethod
+    def set_and_save_preference(name: str, value: Union[bool, Path, str]):
+        """Set preference and write to .env
 
-        console.print(text=help_text, menu="Settings")
+        Parameters
+        ----------
+        name : str
+            Preference name
+        value : Union[bool, Path, str]
+            Preference value
+        """
+        set_preference(name, value)
+        write_to_dotenv("OPENBB_" + name, str(value))
 
     @log_start_end(log=logger)
-    def call_logcollection(self, _):
-        """Process logcollection command"""
-        obbff.LOG_COLLECTION = not obbff.LOG_COLLECTION
-        set_key(ENV_FILE, "OPENBB_LOG_COLLECTION", str(obbff.LOG_COLLECTION))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_tab(self, _):
-        """Process tab command"""
-        obbff.USE_TABULATE_DF = not obbff.USE_TABULATE_DF
-        set_key(ENV_FILE, "OPENBB_USE_TABULATE_DF", str(obbff.USE_TABULATE_DF))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_cls(self, _):
-        """Process cls command"""
-        obbff.USE_CLEAR_AFTER_CMD = not obbff.USE_CLEAR_AFTER_CMD
-        set_key(ENV_FILE, "OPENBB_USE_CLEAR_AFTER_CMD", str(obbff.USE_CLEAR_AFTER_CMD))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_color(self, _):
-        """Process color command"""
-        obbff.USE_COLOR = not obbff.USE_COLOR
-        set_key(ENV_FILE, "OPENBB_USE_COLOR", str(obbff.USE_COLOR))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_promptkit(self, _):
-        """Process promptkit command"""
-        obbff.USE_PROMPT_TOOLKIT = not obbff.USE_PROMPT_TOOLKIT
-        set_key(ENV_FILE, "OPENBB_USE_PROMPT_TOOLKIT", str(obbff.USE_PROMPT_TOOLKIT))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_predict(self, _):
-        """Process predict command"""
-        obbff.ENABLE_PREDICT = not obbff.ENABLE_PREDICT
-        set_key(ENV_FILE, "OPENBB_ENABLE_PREDICT", str(obbff.ENABLE_PREDICT))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_thoughts(self, _):
-        """Process thoughts command"""
-        obbff.ENABLE_THOUGHTS_DAY = not obbff.ENABLE_THOUGHTS_DAY
-        set_key(ENV_FILE, "OPENBB_ENABLE_THOUGHTS_DAY", str(obbff.ENABLE_THOUGHTS_DAY))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_reporthtml(self, _):
-        """Process reporthtml command"""
-        obbff.OPEN_REPORT_AS_HTML = not obbff.OPEN_REPORT_AS_HTML
-        set_key(ENV_FILE, "OPENBB_OPEN_REPORT_AS_HTML", str(obbff.OPEN_REPORT_AS_HTML))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_exithelp(self, _):
-        """Process exithelp command"""
-        obbff.ENABLE_EXIT_AUTO_HELP = not obbff.ENABLE_EXIT_AUTO_HELP
-        set_key(
-            ENV_FILE,
-            "OPENBB_ENABLE_EXIT_AUTO_HELP",
-            str(obbff.ENABLE_EXIT_AUTO_HELP),
-        )
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_rcontext(self, _):
-        """Process rcontext command"""
-        obbff.REMEMBER_CONTEXTS = not obbff.REMEMBER_CONTEXTS
-        set_key(ENV_FILE, "OPENBB_REMEMBER_CONTEXTS", str(obbff.REMEMBER_CONTEXTS))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_dt(self, _):
+    def call_dt(self, other_args: List[str]):
         """Process dt command"""
-        obbff.USE_DATETIME = not obbff.USE_DATETIME
-        set_key(ENV_FILE, "OPENBB_USE_DATETIME", str(obbff.USE_DATETIME))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_rich(self, _):
-        """Process rich command"""
-        obbff.ENABLE_RICH = not obbff.ENABLE_RICH
-        set_key(ENV_FILE, "OPENBB_ENABLE_RICH", str(obbff.ENABLE_RICH))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_richpanel(self, _):
-        """Process richpanel command"""
-        obbff.ENABLE_RICH_PANEL = not obbff.ENABLE_RICH_PANEL
-        set_key(ENV_FILE, "OPENBB_ENABLE_RICH_PANEL", str(obbff.ENABLE_RICH_PANEL))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_ion(self, _):
-        """Process ion command"""
-        obbff.USE_ION = not obbff.USE_ION
-        set_key(ENV_FILE, "OPENBB_USE_ION", str(obbff.USE_ION))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_watermark(self, _):
-        """Process watermark command"""
-        obbff.USE_WATERMARK = not obbff.USE_WATERMARK
-        set_key(ENV_FILE, "OPENBB_USE_WATERMARK", str(obbff.USE_WATERMARK))
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_cmdloc(self, _):
-        """Process cmdloc command"""
-        obbff.USE_CMD_LOCATION_FIGURE = not obbff.USE_CMD_LOCATION_FIGURE
-        set_key(
-            ENV_FILE,
-            "OPENBB_USE_CMD_LOCATION_FIGURE",
-            str(obbff.USE_CMD_LOCATION_FIGURE),
-        )
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_autoscaling(self, _):
-        """Process autoscaling command"""
-        obbff.USE_PLOT_AUTOSCALING = not obbff.USE_PLOT_AUTOSCALING
-        set_key(
-            ENV_FILE,
-            "OPENBB_USE_PLOT_AUTOSCALING",
-            str(obbff.USE_PLOT_AUTOSCALING),
-        )
-        console.print("")
-
-    @log_start_end(log=logger)
-    def call_dpi(self, other_args: List[str]):
-        """Process dpi command"""
         parser = argparse.ArgumentParser(
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-            prog="dpi",
-            description="Dots per inch.",
+            prog="dt",
+            description="Set the use of datetime in the plots",
         )
+        ns_parser = self.parse_simple_args(parser, other_args)
+        if ns_parser:
+            self.set_and_save_preference(
+                "USE_DATETIME", not get_current_user().preferences.USE_DATETIME
+            )
+
+    @log_start_end(log=logger)
+    def call_colors(self, other_args: List[str]):
+        """Process colors command"""
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="colors",
+            description="Console style.",
+        )
+        theme.load_available_styles()
         parser.add_argument(
-            "-v",
-            "--value",
-            type=int,
-            dest="value",
-            help="value",
+            "-s",
+            "--style",
+            type=str,
+            choices=theme.console_styles_available,
+            dest="style",
+            required="-h" not in other_args and "--help" not in other_args,
+            help="To use 'custom' option, go to https://openbb.co/customize and create your theme."
+            " Then, place the downloaded file 'openbb_config.richstyle.json'"
+            f" inside {get_current_user().preferences.USER_STYLES_DIRECTORY} or "
+            f"{STYLES_DIRECTORY_REPO}. If you have a hub account you can change colors "
+            f"here {BackendEnvironment.BASE_URL + 'app/terminal/theme'}.",
         )
         if other_args and "-" not in other_args[0][0]:
-            other_args.insert(0, "-v")
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+            other_args.insert(0, "-s")
+        ns_parser = self.parse_simple_args(parser, other_args)
         if ns_parser:
-            set_key(ENV_FILE, "OPENBB_PLOT_DPI", str(ns_parser.value))
-            cfg_plot.PLOT_DPI = ns_parser.value
-            console.print("")
+            if is_local():
+                self.set_and_save_preference("RICH_STYLE", ns_parser.style)
+            else:
+                set_preference("RICH_STYLE", ns_parser.style)
+                Hub.upload_config(
+                    key="RICH_STYLE",
+                    value=ns_parser.style,
+                    type_="settings",
+                    auth_header=get_current_user().profile.get_auth_header(),
+                )
+                console.print("")
+            console.print("Colors updated.")
+
+    @log_start_end(log=logger)
+    def call_chart(self, other_args: List[str]):
+        """Process chart command"""
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="theme",
+            description="Choose chart style.",
+        )
+        parser.add_argument(
+            "-s",
+            "--style",
+            type=str,
+            dest="style",
+            choices=["dark", "light"],
+            help="Choose chart style. If you have a hub account you can change theme "
+            f"here {BackendEnvironment.BASE_URL + 'app/terminal/theme/charts-tables'}.",
+            required="-h" not in other_args and "--help" not in other_args,
+        )
+        if other_args and "-" not in other_args[0][0]:
+            other_args.insert(0, "-s")
+        ns_parser = self.parse_simple_args(parser, other_args)
+        if ns_parser and ns_parser.style:
+            if is_local():
+                self.set_and_save_preference("CHART_STYLE", ns_parser.style)
+            else:
+                set_preference("CHART_STYLE", ns_parser.style)
+                Hub.upload_config(
+                    key="chart",
+                    value=ns_parser.style,
+                    type_="terminal_style",
+                    auth_header=get_current_user().profile.get_auth_header(),
+                )
+                console.print("")
+            theme.apply_style(ns_parser.style)
+            console.print("Chart theme updated.\n")
+
+    @log_start_end(log=logger)
+    def call_table(self, other_args: List[str]):
+        """Process theme command"""
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="theme",
+            description="Choose table style.",
+        )
+        parser.add_argument(
+            "-s",
+            "--style",
+            type=str,
+            dest="style",
+            choices=["dark", "light"],
+            help="Choose table style. If you have a hub account you can change theme "
+            f"here {BackendEnvironment.BASE_URL + 'app/terminal/theme/charts-tables'}.",
+            required="-h" not in other_args and "--help" not in other_args,
+        )
+        if other_args and "-" not in other_args[0][0]:
+            other_args.insert(0, "-s")
+        ns_parser = self.parse_simple_args(parser, other_args)
+        if ns_parser and ns_parser.style:
+            if is_local():
+                self.set_and_save_preference("TABLE_STYLE", ns_parser.style)
+            else:
+                set_preference("TABLE_STYLE", ns_parser.style)
+                Hub.upload_config(
+                    key="table",
+                    value=ns_parser.style,
+                    type_="terminal_style",
+                    auth_header=get_current_user().profile.get_auth_header(),
+                )
+                console.print("")
+            console.print("Table theme updated.\n")
+
+    @log_start_end(log=logger)
+    def call_source(self, other_args: List[str]):
+        """Process source command"""
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="source",
+            description="Preferred data source file.",
+        )
+        parser.add_argument(
+            "-f",
+            "--file",
+            type=str,
+            dest="file",
+            help="file",
+        )
+        if other_args and "-" not in other_args[0][0]:
+            other_args.insert(0, "-f")
+        ns_parser = self.parse_simple_args(parser, other_args)
+        if ns_parser and ns_parser.file:
+            if os.path.exists(ns_parser.file):
+                self.set_and_save_preference(
+                    "USER_DATA_SOURCES_FILE", str(ns_parser.file)
+                )
+                console.print("[green]Sources file changed successfully![/green]")
+            else:
+                console.print("[red]Couldn't find the sources file![/red]")
 
     @log_start_end(log=logger)
     def call_height(self, other_args: List[str]):
@@ -317,14 +367,13 @@ class SettingsController(BaseController):
             type=int,
             dest="value",
             help="value",
+            required="-h" not in other_args,
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-v")
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_simple_args(parser, other_args)
         if ns_parser:
-            set_key(ENV_FILE, "OPENBB_PLOT_HEIGHT", str(ns_parser.value))
-            cfg_plot.PLOT_HEIGHT = ns_parser.value
-            console.print("")
+            self.set_and_save_preference("PLOT_PYWRY_HEIGHT", ns_parser.value)
 
     @log_start_end(log=logger)
     def call_width(self, other_args: List[str]):
@@ -341,110 +390,156 @@ class SettingsController(BaseController):
             type=int,
             dest="value",
             help="value",
+            required="-h" not in other_args,
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-v")
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_simple_args(parser, other_args)
         if ns_parser:
-            set_key(ENV_FILE, "OPENBB_PLOT_WIDTH", str(ns_parser.value))
-            cfg_plot.PLOT_WIDTH = ns_parser.value
-            console.print("")
+            self.set_and_save_preference("PLOT_PYWRY_WIDTH", ns_parser.value)
 
     @log_start_end(log=logger)
-    def call_pheight(self, other_args: List[str]):
-        """Process pheight command"""
+    def call_lang(self, other_args: List[str]):
+        """Process lang command"""
         parser = argparse.ArgumentParser(
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-            prog="pheight",
-            description="select plot height percentage (autoscaling enabled)",
-        )
-        parser.add_argument(
-            "-v",
-            "--value",
-            type=int,
-            dest="value",
-            help="value",
-        )
-        if other_args and "-" not in other_args[0][0]:
-            other_args.insert(0, "-v")
-        ns_parser = parse_known_args_and_warn(parser, other_args)
-        if ns_parser:
-            set_key(ENV_FILE, "OPENBB_PLOT_HEIGHT_PERCENTAGE", str(ns_parser.value))
-            cfg_plot.PLOT_HEIGHT_PERCENTAGE = ns_parser.value
-            console.print("")
-
-    @log_start_end(log=logger)
-    def call_pwidth(self, other_args: List[str]):
-        """Process pwidth command"""
-        parser = argparse.ArgumentParser(
-            add_help=False,
-            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-            prog="pwidth",
-            description="select plot width percentage (autoscaling enabled)",
-        )
-        parser.add_argument(
-            "-v",
-            "--value",
-            type=float,
-            dest="value",
-            help="value",
-        )
-        if other_args and "-" not in other_args[0][0]:
-            other_args.insert(0, "-v")
-        ns_parser = parse_known_args_and_warn(parser, other_args)
-        if ns_parser:
-            set_key(ENV_FILE, "OPENBB_PLOT_WIDTH_PERCENTAGE", str(ns_parser.value))
-            cfg_plot.PLOT_WIDTH_PERCENTAGE = ns_parser.value
-            console.print("")
-
-    @log_start_end(log=logger)
-    def call_monitor(self, other_args: List[str]):
-        """Process pwidth command"""
-        parser = argparse.ArgumentParser(
-            add_help=False,
-            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-            prog="pwidth",
-            description="choose which monitor to scale: 0-primary, 1-seconday (autoscaling enabled)",
-        )
-        parser.add_argument(
-            "-v",
-            "--value",
-            type=int,
-            dest="value",
-            help="value",
-        )
-        if other_args and "-" not in other_args[0][0]:
-            other_args.insert(0, "-v")
-        ns_parser = parse_known_args_and_warn(parser, other_args)
-        if ns_parser:
-            set_key(ENV_FILE, "OPENBB_MONITOR", str(ns_parser.value))
-            cfg_plot.MONITOR = ns_parser.value
-            console.print("")
-
-    @log_start_end(log=logger)
-    def call_backend(self, other_args: List[str]):
-        """Process backend command"""
-        parser = argparse.ArgumentParser(
-            add_help=False,
-            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-            prog="backend",
-            description="Backend to use for plotting",
+            prog="lang",
+            description="Choose language for terminal",
         )
         parser.add_argument(
             "-v",
             "--value",
             type=str,
             dest="value",
-            help="value",
+            help="Language",
+            choices=self.languages_available,
+            default="",
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-v")
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_simple_args(parser, other_args)
         if ns_parser:
-            set_key(ENV_FILE, "OPENBB_BACKEND", str(ns_parser.value))
-            if ns_parser.value == "None":
-                cfg_plot.BACKEND = None  # type: ignore
+            if ns_parser.value:
+                self.set_and_save_preference("USE_LANGUAGE", ns_parser.value)
             else:
-                cfg_plot.BACKEND = ns_parser.value
-            console.print("")
+                console.print(
+                    f"Languages available: {', '.join(self.languages_available)}"
+                )
+
+    @log_start_end(log=logger)
+    def call_tz(self, other_args: List[str]):
+        """Process tz command"""
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            description="""
+                   Setting a different timezone
+               """,
+        )
+        parser.add_argument(
+            "-t",
+            dest="timezone",
+            help="Choose timezone",
+            required="-h" not in other_args,
+            metavar="TIMEZONE",
+            choices=pytz.all_timezones,
+        )
+
+        if other_args and "-t" not in other_args[0]:
+            other_args.insert(0, "-t")
+
+        ns_parser = self.parse_simple_args(parser, other_args)
+        if ns_parser and ns_parser.timezone:
+            self.set_and_save_preference("TIMEZONE", ns_parser.timezone)
+
+    @log_start_end(log=logger)
+    def call_flair(self, other_args: List[str]):
+        """Process flair command"""
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="flair",
+            description="set the flair emoji to be used",
+        )
+        parser.add_argument(
+            "-e",
+            "--emoji",
+            type=str,
+            dest="emoji",
+            help="flair emoji to be used",
+            nargs="+",
+        )
+        if other_args and "-" not in other_args[0][0]:
+            other_args.insert(0, "-e")
+        ns_parser = self.parse_simple_args(parser, other_args)
+        if ns_parser:
+            if not ns_parser.emoji:
+                ns_parser.emoji = ""
+            else:
+                ns_parser.emoji = " ".join(ns_parser.emoji)
+
+            self.set_and_save_preference("FLAIR", ns_parser.emoji)
+
+    @log_start_end(log=logger)
+    def call_userdata(self, other_args: List[str]):
+        """Process userdata command"""
+
+        def save_file(file_path: Union[str, Path]):
+            console.print(f"User data to be saved in the default folder: '{file_path}'")
+            self.set_and_save_preference("USER_DATA_DIRECTORY", file_path)
+
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="userdata",
+            description="Set folder to store user data such as exports, presets, logs",
+        )
+        parser.add_argument(
+            "--folder",
+            type=str,
+            dest="folder",
+            help="Folder where to store user data. ",
+            default=f"{str(Path.home() / 'OpenBBUserData')}",
+        )
+        parser.add_argument(
+            "--default",
+            action="store",
+            dest="default",
+            default=False,
+            type=bool,
+            help="Revert to the default path.",
+        )
+        if other_args and "-" not in other_args[0][0]:
+            other_args.insert(0, "--folder")
+        ns_parser = self.parse_simple_args(parser, other_args)
+
+        if not (ns_parser and (other_args or self.queue)):
+            return
+
+        if ns_parser.default:
+            save_file(Path.home() / "OpenBBUserData")
+
+        userdata_path = "" if other_args else "/"
+        userdata_path += "/".join([ns_parser.folder] + self.queue)
+        userdata_path = userdata_path.replace("'", "").replace('"', "")
+        # If the path selected does not start from the user root, give relative location from root
+        if userdata_path[0] == "~":
+            userdata_path = userdata_path.replace("~", os.path.expanduser("~"))
+
+        self.queue = []
+        # Check if the directory exists
+        if os.path.isdir(userdata_path):
+            save_file(userdata_path)
+            return
+
+        user_opt = input(
+            f"Path `{userdata_path}` does not exist, do you wish to create it? [Y/N]\n"
+        )
+
+        if user_opt.upper() == "Y":
+            os.makedirs(userdata_path)
+            console.print(
+                f"[green]Folder '{userdata_path}' successfully created.[/green]"
+            )
+            save_file(userdata_path)

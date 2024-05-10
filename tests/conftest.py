@@ -1,12 +1,15 @@
-# IMPORTATION STANDARD
+# IMPORTS STANDARD
+
 import json
 import os
 import pathlib
 from typing import Any, Dict, List, Optional, Type
 
-# IMPORTATION THIRDPARTY
+import importlib_metadata
+
+# IMPORTS THIRD-PARTY
+import matplotlib
 import pandas as pd
-import pkg_resources
 import pytest
 from _pytest.capture import MultiCapture, SysCapture
 from _pytest.config import Config
@@ -14,10 +17,17 @@ from _pytest.config.argparsing import Parser
 from _pytest.fixtures import SubRequest
 from _pytest.mark.structures import Mark
 
-# IMPORTATION INTERNAL
-from openbb_terminal import decorators, helper_funcs
+# IMPORTS INTERNAL
+from openbb_terminal import (
+    config_terminal,
+    decorators,
+    helper_funcs,
+)
+from openbb_terminal.core.session.current_system import set_system_variable
 
 # pylint: disable=redefined-outer-name
+
+config_terminal.setup_i18n()
 
 DISPLAY_LIMIT: int = 500
 EXTENSIONS_ALLOWED: List[str] = ["csv", "json", "txt"]
@@ -27,10 +37,8 @@ EXTENSIONS_MATCHING: Dict[str, List[Type]] = {
     "txt": [str],
 }
 
-os.environ["TEST_MODE"] = "True"
-os.environ["OPENBB_IMG_HOST_ACTIVE"] = "False"
-os.environ["OPENBB_DISCORD_BOT_TOKEN"] = "123"
-os.environ["OPENBB_IMGUR_CLIENT_ID"] = "123"
+set_system_variable("TEST_MODE", True)
+set_system_variable("LOG_COLLECT", False)
 
 
 class Record:
@@ -41,7 +49,7 @@ class Record:
         elif isinstance(data, tuple(EXTENSIONS_MATCHING["csv"])):
             string_value = data.to_csv(
                 encoding="utf-8",
-                line_terminator="\n",
+                lineterminator="\n",
                 # date_format="%Y-%m-%d %H:%M:%S",
                 **kwargs,
             )
@@ -50,12 +58,16 @@ class Record:
         else:
             raise AttributeError(f"Unsupported type : {type(data)}")
 
-        return string_value
+        return string_value.replace("\r\n", "\n")
 
     @staticmethod
     def load_string(path: str) -> Optional[str]:
         if os.path.exists(path):
-            with open(file=path, encoding="utf-8") as f:
+            with open(
+                file=path,
+                encoding="utf-8",
+                newline="\n",  # Windows: newline="\r\n" Which is BAD
+            ) as f:
                 return f.read()
         else:
             return None
@@ -70,16 +82,11 @@ class Record:
 
     @property
     def record_changed(self) -> bool:
-        if self.__recorded is None:
-            changed = True
-        elif self.__strip and self.__recorded.strip() != self.__captured.strip():
-            changed = True
-        elif not self.__strip and self.__recorded != self.__captured:
-            changed = True
-        else:
-            changed = False
-
-        return changed
+        return (
+            self.__recorded is None
+            or (self.__strip and self.__recorded.strip() != self.__captured.strip())
+            or (not self.__strip and self.__recorded != self.__captured)
+        )
 
     @property
     def record_exists(self) -> bool:
@@ -98,11 +105,7 @@ class Record:
         self.__recorded = self.load_string(path=record_path)
 
     def __init__(
-        self,
-        captured: Any,
-        record_path: str,
-        strip: bool = False,
-        **kwargs,
+        self, captured: Any, record_path: str, strip: bool = False, **kwargs
     ) -> None:
         self.__captured = self.extract_string(data=captured, **kwargs)
         self.__record_path = record_path
@@ -120,7 +123,12 @@ class Record:
             pathlib.Path(record_dir_name).mkdir(parents=True, exist_ok=True)
 
         # SAVE FILE
-        with open(file=record_path, mode="w", encoding="utf-8") as f:
+        with open(
+            file=record_path,
+            mode="w",
+            encoding="utf-8",
+            newline="\n",  # Windows: newline="\r\n" Which is BAD
+        ) as f:
             f.write(captured)
 
         # RELOAD RECORDED CONTENT
@@ -145,10 +153,7 @@ class PathTemplate:
             raise Exception(f"Unsupported extension : {extension}")
 
         path = os.path.join(
-            self.__module_dir,
-            extension,
-            self.__module_name,
-            self.__test_name,
+            self.__module_dir, extension, self.__module_name, self.__test_name
         )
         if index:
             path += "_" + str(index)
@@ -208,14 +213,10 @@ class Recorder:
     def capture(self, captured: Any, strip: bool = False, **kwargs):
         record_list = self.__record_list
         record_path = self.__path_template.build_path_by_data(
-            data=captured,
-            index=len(record_list),
+            data=captured, index=len(record_list)
         )
         record = Record(
-            captured=captured,
-            record_path=record_path,
-            strip=strip,
-            **kwargs,
+            captured=captured, record_path=record_path, strip=strip, **kwargs
         )
         self.__record_list.append(record)
 
@@ -269,18 +270,14 @@ class Recorder:
 
 
 def build_path_by_extension(
-    request: SubRequest,
-    extension: str,
-    create_folder: bool = False,
+    request: SubRequest, extension: str, create_folder: bool = False
 ) -> str:
     # SETUP PATH TEMPLATE
     module_dir = request.node.fspath.dirname
     module_name = request.node.fspath.purebasename
     test_name = request.node.name
     path_template = PathTemplate(
-        module_dir=module_dir,
-        module_name=module_name,
-        test_name=test_name,
+        module_dir=module_dir, module_name=module_name, test_name=test_name
     )
 
     # BUILD PATH
@@ -305,9 +302,7 @@ def merge_markers_kwargs(markers: List[Mark]) -> Dict[str, Any]:
 
 
 def record_stdout_format_kwargs(
-    test_name: str,
-    record_mode: str,
-    record_stdout_markers: List[Mark],
+    test_name: str, record_mode: str, record_stdout_markers: List[Mark]
 ) -> Dict[str, Any]:
     kwargs = merge_markers_kwargs(record_stdout_markers)
 
@@ -324,34 +319,49 @@ def record_stdout_format_kwargs(
 
 def pytest_addoption(parser: Parser):
     parser.addoption(
-        "--prediction",
+        "--forecast",
         action="store_true",
-        help="To run tests with the marker : @pytest.mark.prediction",
+        help="To run tests with the marker : @pytest.mark.forecast",
     )
     parser.addoption(
-        "--bots",
+        "--optimization",
         action="store_true",
-        help="To run tests with the marker : @pytest.mark.bots",
+        help="To run tests with the marker : @pytest.mark.optimization",
+    )
+    parser.addoption(
+        "--session",
+        action="store_true",
+        help="To run tests with the marker : @pytest.mark.session",
     )
     parser.addoption(
         "--rewrite-expected",
         action="store_true",
         help="To force `record_stdout` and `recorder` to rewrite all files.",
     )
+    parser.addoption(
+        "--autodoc",
+        action="store_true",
+        default=False,
+        help="run auto documentation tests",
+    )
 
 
 def brotli_check():
-    installed_packages = pkg_resources.working_set
-    for item in list(installed_packages):
+    for item in importlib_metadata.packages_distributions():
         if "brotli" in str(item).lower():
             pytest.exit("Uninstall brotli and brotlipy before running tests")
 
 
 def disable_rich():
     def effect(df, *xargs, **kwargs):  # pylint: disable=unused-argument
-        print(df.to_string())
+        print(df.to_string())  # noqa: T201
 
     helper_funcs.print_rich_table = effect
+
+
+def disable_matplotlib():
+    # We add this to avoid multiple figures being opened
+    matplotlib.use("Agg")
 
 
 def disable_check_api():
@@ -359,7 +369,7 @@ def disable_check_api():
 
 
 def enable_debug():
-    os.environ["DEBUG_MODE"] = "true"
+    set_system_variable("DEBUG_MODE", True)
 
 
 def pytest_configure(config: Config) -> None:
@@ -369,12 +379,26 @@ def pytest_configure(config: Config) -> None:
     enable_debug()
     disable_rich()
     disable_check_api()
+    disable_matplotlib()
 
 
 @pytest.fixture(scope="session")  # type: ignore
 def rewrite_expected(request: SubRequest) -> bool:
     """Force rewriting of all expected data by : `record_stdout` and `recorder`."""
     return request.config.getoption("--rewrite-expected")
+
+
+@pytest.fixture(autouse=True)
+def mock_matplotlib(mocker):
+    mocker.patch("matplotlib.pyplot.show")
+
+
+@pytest.fixture(autouse=True)
+def mock_plotly(mocker):
+    mocker.patch("plotly.io.show")
+
+
+# pylint: disable=protected-access
 
 
 @pytest.fixture
@@ -398,20 +422,6 @@ def default_json_path(request: SubRequest) -> str:
 def record_stdout_markers(request: SubRequest) -> List[Mark]:
     """All markers applied to the certain test together with cassette names associated with each marker."""
     return list(request.node.iter_markers(name="record_stdout"))
-
-
-@pytest.fixture(scope="session", autouse=True)
-def delete_images():
-    yield
-    mydir = os.path.join(
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
-        "bots",
-        "interactive",
-        "images",
-    )
-    filelist = [f for f in os.listdir(mydir) if f.endswith(".png")]
-    for f in filelist:
-        os.remove(os.path.join(mydir, f))
 
 
 @pytest.fixture(autouse=True)
@@ -469,8 +479,7 @@ def record_stdout(
             capsys = request.getfixturevalue("capsys")
             yield
             recorder.capture(
-                captured=capsys.readouterr().out,
-                strip=formatted_kwargs["strip"],
+                captured=capsys.readouterr().out, strip=formatted_kwargs["strip"]
             )
 
         # SAVE/CHECK RECORD
@@ -496,9 +505,7 @@ def recorder(
     module_name = request.node.fspath.purebasename
     test_name = request.node.name
     path_template = PathTemplate(
-        module_dir=module_dir,
-        module_name=module_name,
-        test_name=test_name,
+        module_dir=module_dir, module_name=module_name, test_name=test_name
     )
     if disable_recording:
         yield None

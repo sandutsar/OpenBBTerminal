@@ -1,9 +1,10 @@
 __pycache__/
-logs/
 *.pyc
 .DS_Store
 *.env
 .venv
+venv*/
+venv
 .vscode
 *.ipynb
 env/
@@ -11,50 +12,76 @@ venv/
 !notebooks/jupyter/.gitkeep
 .python-version
 .mypy_cache
+.ruff_cache
+.pytest_cache
 iframe_figures/
 exports/*
 .idea
 .coverage
+.scannerwork
 htmlcov
 openbb_terminal/config_plot.py
 openbb_terminal/config_terminal.py
 openbb_terminal/feature_flags.py
-openbb_terminal/jupyter/reports/stored/*
-openbb_terminal/jupyter/dashboards/.ipynb_checkpoints
-openbb_terminal/jupyter/reports/.ipynb_checkpoints
-openbb_terminal/jupyter/widgets/.ipynb_checkpoints
-!openbb_terminal/jupyter/reports/stored/.gitkeep
-!openbb_terminal/jupyter/dashboards/*.ipynb
-!openbb_terminal/jupyter/reports/*.ipynb
+openbb_terminal/reports/stored/*
+!openbb_terminal/reports/stored/.gitkeep
+!openbb_terminal/dashboards/voila/*.ipynb
+!openbb_terminal/reports/*.ipynb
 openbb_terminal/portfolio/portfolios/*
-.ipynb_checkpoints/*
+**/.ipynb_checkpoints
 *.swp
 *.http
-bots/interactive/*.html
 .coverage.*
-
+!openbb_terminal/reports/templates/*.ipynb
+*_tests.csv
+integration_test_output/
+integration_test_summary/
+openbb_terminal/reports/templates/*.html
+website/functions
+*_sdk_audit.csv
+website/terminaltest
+!build/docker/compose.env
+openbb_terminal/core/plots/assets/plotly*.js
+.dccache
+*rome.json
+**/node_modules/*
+.cursorignore
 # pyinstaller artifacts
 *.pyo
-dist/*
+**/dist/*
 build/terminal
+build/nsis/app
+DMG/*
+*.dmg
+*.sh
 
-# Jupyter Lab Extension build files
-jupyterlab/*/*.bundle.*
-jupyterlab/*/lib/
-jupyterlab/*/*/labextension/
-jupyterlab/*/node_modules/
-jupyterlab/*/*/node_modules/
-jupyterlab/*/*.egg-info/
-jupyterlab/*/.ipynb_checkpoints
-jupyterlab/*/*.tsbuildinfo
-jupyterlab/*/ui-tests/test-results/
-jupyterlab/*/ui-tests/tests/*.ts-snapshots/
-
-# Sphinx documentation build files
-docs/_build
+# User settings for the SDK
+user_settings.json
 
 # User stylesheets
-styles/user
+openbb_terminal/miscellaneous/styles/user/hub.richstyle.json
 
 # the file containing the API keys for the web version
 openbb_terminal_web/setenv
+
+# dart models
+darts_logs/
+
+# User data
+custom_imports/*.csv
+custom_imports/*/*.csv
+
+# cache
+cache/
+
+# lightning logs
+lightning_logs/
+
+# testing artifacts
+*/mocked_path
+
+# CA certificates
+*.pem
+
+# Platform auto generated files
+openbb_platform/openbb/package/*

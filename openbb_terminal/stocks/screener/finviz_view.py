@@ -1,22 +1,24 @@
 """ Finviz View """
+
 __docformat__ = "numpy"
 
 import difflib
 import logging
 import os
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 
+from openbb_terminal.core.session.current_user import get_current_user
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.helper_funcs import (
     export_data,
-    print_rich_table,
     lambda_long_number_format,
+    print_rich_table,
 )
-from openbb_terminal.terminal_helper import suppress_stdout
 from openbb_terminal.rich_config import console
 from openbb_terminal.stocks.screener.finviz_model import get_screener_data
+from openbb_terminal.terminal_helper import suppress_stdout
 
 logger = logging.getLogger(__name__)
 
@@ -89,14 +91,14 @@ d_cols_to_sort = {
     ],
     "performance": [
         "Ticker",
-        "Perf Week",
-        "Perf Month",
-        "Perf Quart",
-        "Perf Half",
-        "Perf Year",
-        "Perf YTD",
-        "Volatility W",
-        "Volatility M",
+        "1W",
+        "1M",
+        "3M",
+        "6M",
+        "1Y",
+        "YTD",
+        "1W Volatility",
+        "1M Volatility",
         "Recom",
         "Avg Volume",
         "Rel Volume",
@@ -125,12 +127,13 @@ d_cols_to_sort = {
 
 @log_start_end(log=logger)
 def screener(
-    loaded_preset: str,
-    data_type: str,
-    limit: int = 10,
+    loaded_preset: str = "top_gainers",
+    data_type: str = "overview",
+    limit: int = -1,
     ascend: bool = False,
-    sort: str = "",
+    sortby: str = "",
     export: str = "",
+    sheet_name: Optional[str] = None,
 ) -> List[str]:
     """Screener one of the following: overview, valuation, financial, ownership, performance, technical.
 
@@ -144,7 +147,7 @@ def screener(
         Limit of stocks to display
     ascend : bool
         Order of table to ascend or descend
-    sort: str
+    sortby: str
         Column to sort table by
     export : str
         Export dataframe data to csv,json,xlsx file
@@ -158,7 +161,7 @@ def screener(
         df_screen = get_screener_data(
             preset_loaded=loaded_preset,
             data_type=data_type,
-            limit=10,
+            limit=limit,
             ascend=ascend,
         )
 
@@ -168,23 +171,23 @@ def screener(
 
         df_screen = df_screen.dropna(axis="columns", how="all")
 
-        if sort:
-            if sort in d_cols_to_sort[data_type]:
+        if sortby:
+            if sortby in d_cols_to_sort[data_type]:
                 df_screen = df_screen.sort_values(
-                    by=[sort],
+                    by=[sortby],
                     ascending=ascend,
                     na_position="last",
                 )
             else:
                 similar_cmd = difflib.get_close_matches(
-                    sort,
+                    sortby,
                     d_cols_to_sort[data_type],
                     n=1,
                     cutoff=0.7,
                 )
                 if similar_cmd:
                     console.print(
-                        f"Replacing '{' '.join(sort)}' by '{similar_cmd[0]}' so table can be sorted."
+                        f"Replacing '{' '.join(sortby)}' by '{similar_cmd[0]}' so table can be sorted."
                     )
                     df_screen = df_screen.sort_values(
                         by=[similar_cmd[0]],
@@ -195,61 +198,50 @@ def screener(
                     console.print(
                         f"Wrong sort column provided! Provide one of these: {', '.join(d_cols_to_sort[data_type])}"
                     )
-
+        df_original = df_screen.copy()
         df_screen = df_screen.fillna("")
 
-        if data_type == "ownership":
-            cols = ["Market Cap", "Outstanding", "Float", "Avg Volume", "Volume"]
-            df_screen[cols] = df_screen[cols].applymap(
-                lambda x: lambda_long_number_format(x, 1)
-            )
-        elif data_type == "overview":
-            cols = ["Market Cap", "Volume"]
-            df_screen[cols] = df_screen[cols].applymap(
-                lambda x: lambda_long_number_format(x, 1)
-            )
-        elif data_type == "technical":
-            cols = ["Volume"]
-            df_screen[cols] = df_screen[cols].applymap(
-                lambda x: lambda_long_number_format(x, 1)
-            )
-        elif data_type == "valuation":
-            cols = ["Market Cap", "Volume"]
-            df_screen[cols] = df_screen[cols].applymap(
-                lambda x: lambda_long_number_format(x, 1)
-            )
-        elif data_type == "financial":
-            cols = ["Market Cap", "Volume"]
-            df_screen[cols] = df_screen[cols].applymap(
-                lambda x: lambda_long_number_format(x, 1)
-            )
-        elif data_type == "performance":
-            cols = ["Avg Volume", "Volume"]
-            df_screen[cols] = df_screen[cols].applymap(
-                lambda x: lambda_long_number_format(x, 1)
-            )
-        elif data_type == "technical":
-            cols = ["Volume"]
+        cols: List[str] = []
+        data_type_cols = {
+            "ownership": ["Market Cap", "Outstanding", "Float", "Avg Volume", "Volume"],
+            "overview": ["Market Cap", "Volume"],
+            "technical": ["Volume"],
+            "valuation": ["Market Cap", "Volume"],
+            "financial": ["Market Cap", "Volume"],
+            "performance": ["Avg Volume", "Volume"],
+        }
+        cols = data_type_cols.get(data_type, [])
+
+        if cols:
             df_screen[cols] = df_screen[cols].applymap(
                 lambda x: lambda_long_number_format(x, 1)
             )
 
+        if not get_current_user().preferences.USE_INTERACTIVE_DF:
+            df_original = df_screen
+
         print_rich_table(
-            df_screen.head(n=limit),
-            headers=list(df_screen.columns),
+            df_original,
+            headers=list(df_original.columns),
             show_index=False,
             title="Finviz Screener",
+            export=bool(export),
+            limit=limit,
         )
-        console.print("")
 
         export_data(
             export,
             os.path.dirname(os.path.abspath(__file__)),
             data_type,
-            df_screen,
+            df_original,
+            sheet_name,
         )
 
-        return list(df_screen.head(n=limit)["Ticker"].values)
+        return df_screen.Ticker.tolist()
 
-    console.print("")
+    console.print(
+        "Error: The preset selected did not return results."
+        "This might be a temporary error that is resolved by running the command again."
+        "If no results continue to be returned, check the preset and expand the parameters."
+    )
     return []

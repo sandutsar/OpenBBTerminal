@@ -1,11 +1,15 @@
 """Dataframe helpers"""
+
 __docformat__ = "numpy"
 
 import math
 import re
-from typing import Union, Any, Optional
 import textwrap
+from typing import Any, Optional, Union
+
 import pandas as pd
+
+from openbb_terminal.core.session.current_user import get_current_user
 from openbb_terminal.helper_funcs import lambda_long_number_format
 
 
@@ -80,6 +84,8 @@ def lambda_long_number_format_with_type_check(x: Union[int, float]) -> Union[str
     Union[str, Any]
     """
 
+    if get_current_user().preferences.USE_INTERACTIVE_DF:
+        return x
     if isinstance(x, (int, float)) and x < 10**18:
         return lambda_long_number_format(x)
     return x
@@ -102,6 +108,8 @@ def lambda_very_long_number_formatter(num: Union[str, int, float]) -> str:
         formatted number
     """
 
+    if get_current_user().preferences.USE_INTERACTIVE_DF:
+        return num  # type:ignore
     if isinstance(num, str):
         try:
             num = float(num)
@@ -122,6 +130,20 @@ def lambda_very_long_number_formatter(num: Union[str, int, float]) -> str:
         return f'{formatted_num}{["", "K", "M", "B", "T"][magnitude]}'
 
     return num
+
+
+def prettify_paragraph(text):
+    # Add tab to the beginning of paragraph
+    text = "\t" + text
+    pat = "(?<!\n)\n(?!\n)"
+
+    # Add tab to double line break
+    pretty_text = re.sub("\n\n", "\n\n\t", text)
+
+    # Replace \n with None
+    even_more_pretty_text = re.sub(pat, "", pretty_text)
+
+    return even_more_pretty_text
 
 
 def prettify_column_names(columns: list) -> list:

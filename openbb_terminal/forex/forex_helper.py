@@ -1,31 +1,41 @@
-from datetime import datetime
-from typing import List, Optional, Dict
-import os
+"""Forex helper."""
+
 import argparse
 import logging
+import os
+import re
+from datetime import datetime, timedelta
+from typing import Dict, Iterable, List, Optional
 
-import yfinance as yf
 import pandas as pd
-import matplotlib.pyplot as plt
-import mplfinance as mpf
+import yfinance as yf
 
-from openbb_terminal.forex import av_model
-from openbb_terminal.rich_config import console
+from openbb_terminal.core.plots.plotly_ta.ta_class import PlotlyTA
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_funcs import plot_autoscale
-from openbb_terminal.config_terminal import theme
+from openbb_terminal.forex import av_model, polygon_model
+from openbb_terminal.rich_config import console
+from openbb_terminal.stocks import stocks_helper
 
+CANDLE_SORT = [
+    "adjclose",
+    "open",
+    "close",
+    "high",
+    "low",
+    "volume",
+    "logret",
+]
 
 FOREX_SOURCES: Dict = {
-    "yf": "YahooFinance",
-    "av": "AlphaAdvantage",
-    "oanda": "Oanda",
+    "YahooFinance": "YahooFinance",
+    "AlphaVantage": "AlphaAdvantage",
+    "Polygon": "Polygon",
+    "Oanda": "Oanda",
 }
 
 SOURCES_INTERVALS: Dict = {
-    "yf": [
+    "YahooFinance": [
         "1min",
-        "2min",
         "5min",
         "15min",
         "30min",
@@ -38,11 +48,11 @@ SOURCES_INTERVALS: Dict = {
         "1month",
         "3month",
     ],
-    "av": ["1min", "5min", "15min", "30min", "60min"],
+    "AlphaVantage": ["1min", "5min", "15min", "30min", "60min"],
 }
 
 INTERVAL_MAPS: Dict = {
-    "yf": {
+    "YahooFinance": {
         "1min": "1m",
         "2min": "2m",
         "5min": "5m",
@@ -50,14 +60,21 @@ INTERVAL_MAPS: Dict = {
         "30min": "30m",
         "60min": "60m",
         "90min": "90m",
-        "1hour": "1h",
+        "1hour": "60m",
         "1day": "1d",
         "5day": "5d",
         "1week": "1wk",
         "1month": "1mo",
         "3month": "3mo",
     },
-    "av": {"1min": 1, "5min": 5, "15min": 15, "30min": 30, "60min": 60},
+    "AlphaVantage": {
+        "1min": 1,
+        "5min": 5,
+        "15min": 15,
+        "30min": 30,
+        "60min": 60,
+        "1day": 1,
+    },
 }
 
 logger = logging.getLogger(__name__)
@@ -67,41 +84,123 @@ logger = logging.getLogger(__name__)
 def load(
     to_symbol: str,
     from_symbol: str,
-    resolution: str,
-    interval: str,
-    start_date: str,
-    source: str = "yf",
-):
-    interval_map = INTERVAL_MAPS[source]
+    resolution: str = "d",
+    interval: str = "1day",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    source: str = "YahooFinance",
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """Load forex for two given symbols.
 
-    if interval not in interval_map.keys():
-        console.print(
-            f"Interval not supported by {FOREX_SOURCES[source]}. Need to be one of the following options",
-            interval_map.keys(),
-        )
-        return pd.DataFrame()
+    Parameters
+    ----------
+    to_symbol : str
+        The from currency symbol. Ex: USD, EUR, GBP, YEN
+    from_symbol : str
+        The from currency symbol. Ex: USD, EUR, GBP, YEN
+    resolution : str, optional
+        The resolution for the data, by default "d"
+    interval : str, optional
+        What interval to get data for, by default "1day"
+    start_date : Optional[str], optional
+        When to begin loading in data, by default last_year.strftime("%Y-%m-%d")
+    end_date : Optional[str], optional
+        When to end loading in data, by default None
+    source : str, optional
+        Where to get data from, by default "YahooFinance"
+    verbose : bool, optional
+        Display verbose information on what was the pair that was loaded, by default True
 
-    if source == "av":
+    Returns
+    -------
+    pd.DataFrame
+        The loaded data
 
-        df = av_model.get_historical(
-            to_symbol=to_symbol,
-            from_symbol=from_symbol,
-            resolution=resolution,
-            interval=interval_map[interval],
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> openbb.forex.load(from_symbol="EUR", to_symbol="USD", start_date="2020-11-30", end_date="2022-12-01")
+    """
+
+    if start_date is None:
+        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+    if end_date is None:
+        end_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        end_date = (
+            datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+
+    if source in ["YahooFinance", "AlphaVantage"]:
+        interval_map = INTERVAL_MAPS[source]
+
+        if interval not in interval_map and resolution != "d":
+            if verbose:
+                console.print(
+                    f"Interval not supported by {FOREX_SOURCES[source]}."
+                    " Need to be one of the following options",
+                    list(interval_map.keys()),
+                )
+            return pd.DataFrame()
+
+        # Check interval in multiple ways
+        if interval in interval_map:
+            clean_interval = interval_map[interval]
+        elif interval in interval_map.values():
+            clean_interval = interval
+        else:
+            console.print(f"[red]'{interval}' is an invalid interval[/red]\n")
+            return pd.DataFrame()
+
+        if source == "AlphaVantage":
+            if "min" in interval:
+                resolution = "i"
+            df = av_model.get_historical(
+                to_symbol=to_symbol,
+                from_symbol=from_symbol,
+                resolution=resolution,
+                interval=clean_interval,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            df.index.name = "date"
+            df.name = f"{from_symbol}/{to_symbol}"
+            return df
+
+        if source == "YahooFinance":
+            df = yf.download(
+                f"{from_symbol}{to_symbol}=X",
+                start=datetime.strptime(start_date, "%Y-%m-%d"),
+                end=datetime.strptime(end_date, "%Y-%m-%d"),
+                interval=clean_interval,
+                progress=verbose,
+            )
+            df.index = pd.to_datetime(df.index).tz_localize(None)
+            df.index.name = "date"
+            df.name = f"{from_symbol}/{to_symbol}"
+            return df
+
+    if source == "Polygon":
+        # Interval for polygon gets broken into multiplier and timeframe
+        temp = re.split(r"(\d+)", interval)
+        multiplier = int(temp[1])
+        timeframe = temp[2]
+        if timeframe == "min":
+            timeframe = "minute"
+        df = polygon_model.get_historical(
+            f"{from_symbol}{to_symbol}",
+            multiplier=multiplier,
+            timespan=timeframe,
             start_date=start_date,
+            end_date=end_date,
         )
+        df.index.name = "date"
+        df.name = f"{from_symbol}/{to_symbol}"
+        return df
 
-    if source == "yf":
-
-        df = yf.download(
-            f"{from_symbol}{to_symbol}=X",
-            end=datetime.now(),
-            start=datetime.strptime(start_date, "%Y-%m-%d"),
-            interval=interval_map[interval],
-            progress=False,
-        )
-
-    return df
+    console.print(f"Source {source} not supported")
+    return pd.DataFrame()
 
 
 @log_start_end(log=logger)
@@ -117,7 +216,7 @@ YF_CURRENCY_LIST = get_yf_currency_list()
 
 @log_start_end(log=logger)
 def check_valid_yf_forex_currency(fx_symbol: str) -> str:
-    """Check if given symbol is supported on Yahoo Finance
+    """Check if given symbol is supported on Yahoo Finance.
 
     Parameters
     ----------
@@ -145,9 +244,12 @@ def check_valid_yf_forex_currency(fx_symbol: str) -> str:
 @log_start_end(log=logger)
 def display_candle(
     data: pd.DataFrame,
-    to_symbol: str,
-    from_symbol: str,
-    external_axes: Optional[List[plt.Axes]] = None,
+    to_symbol: str = "",
+    from_symbol: str = "",
+    ma: Optional[Iterable[int]] = None,
+    external_axes: bool = False,
+    add_trend: bool = False,
+    yscale: str = "linear",
 ):
     """Show candle plot for fx data.
 
@@ -159,44 +261,42 @@ def display_candle(
         To forex symbol
     from_symbol : str
         From forex symbol
-    external_axes: Optional[List[plt.Axes]]
-        External axes (1 axis are expected in the list), by default None
+    ma : Optional[Iterable[int]]
+        Moving averages
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
-    candle_chart_kwargs = {
-        "type": "candle",
-        "style": theme.mpf_style,
-        "mav": (20, 50),
-        "volume": False,
-        "xrotation": theme.xticks_rotation,
-        "scale_padding": {"left": 0.3, "right": 1, "top": 0.8, "bottom": 0.8},
-        "update_width_config": {
-            "candle_linewidth": 0.6,
-            "candle_width": 0.8,
-            "volume_linewidth": 0.8,
-            "volume_width": 0.8,
-        },
-        "warn_too_much_data": 20000,
-    }
-    # This plot has 2 axes
-    if not external_axes:
-        candle_chart_kwargs["returnfig"] = True
-        candle_chart_kwargs["figratio"] = (10, 7)
-        candle_chart_kwargs["figscale"] = 1.10
-        candle_chart_kwargs["figsize"] = plot_autoscale()
-        fig, ax = mpf.plot(data, **candle_chart_kwargs)
-        fig.suptitle(
-            f"{from_symbol}/{to_symbol}",
-            x=0.055,
-            y=0.965,
-            horizontalalignment="left",
-        )
-        theme.visualize_output(force_tight_layout=False)
-        ax[0].legend()
-    else:
-        if len(external_axes) != 1:
-            logger.error("Expected list of 1 axis items.")
-            console.print("[red]Expected list of 1 axis items./n[/red]")
-            return
-        (ax1,) = external_axes
-        candle_chart_kwargs["ax"] = ax1
-        mpf.plot(data, **candle_chart_kwargs)
+    # We check if there's Volume data to avoid errors and empty subplots
+    if not (has_volume := False) and "Volume" in data.columns:
+        has_volume = bool(data["Volume"].sum() > 0)
+
+    if add_trend and (data.index[1] - data.index[0]).total_seconds() >= 86400:
+        if "date_id" not in data.columns:
+            data = stocks_helper.process_candle(data)
+        data = stocks_helper.find_trendline(data, "OC_High", "high")
+        data = stocks_helper.find_trendline(data, "OC_Low", "low")
+
+    indicators = {}
+    if ma:
+        indicators = dict(rma=dict(length=ma))
+
+    data.name = f"{from_symbol}/{to_symbol}"
+    fig = PlotlyTA.plot(data, indicators, volume=has_volume)
+    if add_trend:
+        fig.add_trend(data, secondary_y=False)
+
+    fig.update_yaxes(type=yscale, row=1, col=1, nticks=20, secondary_y=False)
+
+    return fig.show(external=external_axes)
+
+
+@log_start_end(log=logger)
+def parse_forex_symbol(input_symbol):
+    """Parse potential forex symbols."""
+    for potential_split in ["-", "/"]:
+        if potential_split in input_symbol:
+            symbol = input_symbol.replace(potential_split, "")
+            return symbol
+    if len(input_symbol) != 6:
+        raise argparse.ArgumentTypeError("Input symbol should be 6 characters.\n ")
+    return input_symbol.upper()

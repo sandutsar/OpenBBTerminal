@@ -1,12 +1,15 @@
 """Cryptosaurio model"""
+
 __docformat__ = "numpy"
 
 import logging
-from typing import Tuple, Any
+from typing import Tuple
+
 import pandas as pd
-import requests
 
 from openbb_terminal.decorators import log_start_end
+from openbb_terminal.helper_funcs import request
+from openbb_terminal.rich_config import console
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +17,7 @@ api_url = "https://barney.cryptosaurio.com"
 
 
 @log_start_end(log=logger)
-def get_anchor_data(address: str = "") -> Tuple[Any, Any, str]:
+def get_anchor_data(address: str = "") -> Tuple[pd.DataFrame, pd.DataFrame, str]:
     """Returns anchor protocol earnings data of a certain terra address
     [Source: https://cryptosaurio.com/]
 
@@ -22,22 +25,25 @@ def get_anchor_data(address: str = "") -> Tuple[Any, Any, str]:
     ----------
     address : str
         Terra address. Valid terra addresses start with 'terra'
+
     Returns
     -------
-    Tuple:
-        - pandas.DataFrame: Earnings over time in UST
-        - pandas.DataFrame: History of transactions
+    Tuple[pd.DataFrame, pd.DataFrame, str]
+        - pd.DataFrame: Earnings over time in UST
+        - pd.DataFrame: History of transactions
         - str:              Overall statistics
     """
 
     if not address.startswith("terra"):
-        raise Exception(
+        console.print(
             "Select a valid address. Valid terra addresses start with 'terra'"
         )
+        return pd.DataFrame(), pd.DataFrame(), ""
 
-    response = requests.get(f"{api_url}/get-anchor-protocol-data-v2/{address}")
+    response = request(f"{api_url}/get-anchor-protocol-data-v2/{address}")
     if response.status_code != 200:
-        raise Exception(f"Status code: {response.status_code}. Reason: {response.text}")
+        console.print(f"Status code: {response.status_code}. Reason: {response.reason}")
+        return pd.DataFrame(), pd.DataFrame(), ""
 
     data = response.json()
     df = pd.DataFrame(reversed(data["historicalData"]))

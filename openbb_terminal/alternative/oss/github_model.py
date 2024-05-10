@@ -1,24 +1,26 @@
 """GitHub Model"""
+
 __docformat__ = "numpy"
 # pylint: disable=C0201,W1401
 
 import logging
-from typing import Any, Dict
 import math
 from datetime import datetime
-import requests
+from typing import Any, Dict, Optional
+
 import pandas as pd
 
-from openbb_terminal import config_terminal as cfg
-from openbb_terminal.decorators import log_start_end
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.decorators import check_api_key, log_start_end
+from openbb_terminal.helper_funcs import get_user_agent, request
 from openbb_terminal.rich_config import console
-from openbb_terminal.helper_funcs import get_user_agent
 
 logger = logging.getLogger(__name__)
 
 
-def get_github_data(url: str, **kwargs):
-    """Get repository stats
+@check_api_key(["API_GITHUB_KEY"])
+def get_github_data(url: str, **kwargs) -> Optional[Dict[str, Any]]:
+    """Get repository stats.
 
     Parameters
     ----------
@@ -26,14 +28,16 @@ def get_github_data(url: str, **kwargs):
         github api endpoint
     params: dict
         params to pass to api endpoint
+
     Returns
     -------
-    dict with data
+    Dict[str, Any]
+        Dictionary with data
     """
-    res = requests.get(
+    res = request(
         url,
         headers={
-            "Authorization": f"token {cfg.API_GITHUB_KEY}",
+            "Authorization": f"token {get_current_user().credentials.API_GITHUB_KEY}",
             "User-Agent": get_user_agent(),
             "Accept": "application/vnd.github.v3.star+json",
         },
@@ -53,19 +57,21 @@ def get_github_data(url: str, **kwargs):
 def search_repos(
     sortby: str = "stars", page: int = 1, categories: str = ""
 ) -> pd.DataFrame:
-    """Get repos sorted by stars or forks. Can be filtered by categories
+    """Get repos sorted by stars or forks. Can be filtered by categories.
 
     Parameters
     ----------
     sortby : str
-            Sort repos by {stars, forks}
+        Sort repos by {stars, forks}
     categories : str
-            Check for repo categories. If more than one separate with a comma: e.g., finance,investment. Default: None
+        Check for repo categories. If more than one separate with a comma: e.g., finance,investment. Default: None
     page : int
-            Page number to get repos
+        Page number to get repos
+
     Returns
     -------
-    pd.DataFrame with list of repos
+    pd.DataFrame
+        Dataframe with repos
     """
     params: Dict[str, Any] = {"page": page}
     if categories:
@@ -80,17 +86,18 @@ def search_repos(
 
 
 @log_start_end(log=logger)
-def get_stars_history(repo: str):
-    """Get repository star history
+def get_stars_history(repo: str) -> pd.DataFrame:
+    """Get repository star history.
 
     Parameters
     ----------
     repo : str
-            Repo to search for Format: org/repo, e.g., openbb-finance/openbbterminal
+        Repo to search for Format: org/repo, e.g., openbb-finance/openbbterminal
 
     Returns
     -------
-    pd.DataFrame - Columns: Date, Stars
+    pd.DataFrame
+        Dataframe with star history - Columns: Date, Stars
     """
     data = get_github_data(f"https://api.github.com/repos/{repo}")
     if data and "stargazers_count" in data:
@@ -114,9 +121,7 @@ def get_stars_history(repo: str):
             stars[sorted_keys[i]] += stars[sorted_keys[i - 1]]
         df = pd.DataFrame(
             {
-                "Date": [
-                    datetime.strptime(date, "%Y-%m-%d").date() for date in stars.keys()
-                ],
+                "Date": [datetime.strptime(date, "%Y-%m-%d").date() for date in stars],
                 "Stars": stars.values(),
             }
         )
@@ -126,22 +131,24 @@ def get_stars_history(repo: str):
 
 
 @log_start_end(log=logger)
-def get_top_repos(sortby: str, top: int, categories: str) -> pd.DataFrame:
-    """Get repos sorted by stars or forks. Can be filtered by categories
+def get_top_repos(sortby: str, limit: int = 50, categories: str = "") -> pd.DataFrame:
+    """Get repos sorted by stars or forks. Can be filtered by categories.
 
     Parameters
     ----------
     sortby : str
-            Sort repos by {stars, forks}
+        Sort repos by {stars, forks}
     categories : str
-            Check for repo categories. If more than one separate with a comma: e.g., finance,investment. Default: None
-    top : int
-            Number of repos to search for
+        Check for repo categories. If more than one separate with a comma: e.g., finance,investment. Default: None
+    limit : int
+        Number of repos to search for
+
     Returns
     -------
-    pd.DataFrame with list of repos
+    pd.DataFrame
+        Dataframe with repos
     """
-    initial_top = top
+    initial_top = limit
     df = pd.DataFrame(
         columns=[
             "full_name",
@@ -154,31 +161,32 @@ def get_top_repos(sortby: str, top: int, categories: str) -> pd.DataFrame:
             "html_url",
         ]
     )
-    if top <= 100:
+    if limit <= 100:
         df2 = search_repos(sortby=sortby, page=1, categories=categories)
         df = pd.concat([df, df2], ignore_index=True)
     else:
         p = 2
-        while top > 0:
+        while limit > 0:
             df2 = search_repos(sortby=sortby, page=p, categories=categories)
             df = pd.concat([df, df2], ignore_index=True)
-            top -= 100
+            limit -= 100
             p += 1
     return df.head(initial_top)
 
 
 @log_start_end(log=logger)
-def get_repo_summary(repo: str):
-    """Get repository summary
+def get_repo_summary(repo: str) -> pd.DataFrame:
+    """Get repository summary.
 
     Parameters
     ----------
     repo : str
-            Repo to search for Format: org/repo, e.g., openbb-finance/openbbterminal
+        Repo to search for Format: org/repo, e.g., openbb-finance/openbbterminal
 
     Returns
     -------
-    pd.DataFrame - Columns: Metric, Value
+    pd.DataFrame
+        Dataframe with repo summary - Columns: Metric, Value
     """
     data = get_github_data(f"https://api.github.com/repos/{repo}")
     if not data:

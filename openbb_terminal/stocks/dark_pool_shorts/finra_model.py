@@ -1,4 +1,5 @@
 """ FINRA Model """
+
 __docformat__ = "numpy"
 
 import logging
@@ -9,13 +10,14 @@ import requests
 from scipy import stats
 
 from openbb_terminal.decorators import log_start_end
+from openbb_terminal.helper_funcs import request
 from openbb_terminal.rich_config import console
 
 logger = logging.getLogger(__name__)
 
 
 @log_start_end(log=logger)
-def getFINRAweeks(tier: str, is_ats: bool) -> List:
+def getFINRAweeks(tier: str = "T1", is_ats: bool = True) -> List:
     """Get FINRA weeks. [Source: FINRA]
 
     Parameters
@@ -52,8 +54,9 @@ def getFINRAweeks(tier: str, is_ats: bool) -> List:
         "sortFields": ["-weekStartDate"],
     }
 
-    response = requests.post(
+    response = request(
         "https://api.finra.org/data/group/otcMarket/name/weeklyDownloadDetails",
+        method="POST",
         headers=req_hdr,
         json=req_data,
     )
@@ -62,21 +65,25 @@ def getFINRAweeks(tier: str, is_ats: bool) -> List:
 
 
 def getFINRAdata_offset(
-    weekStartDate: str, tier: str, ticker: str, is_ats: bool, offset: int
+    start_date: str,
+    tier: str = "T1",
+    symbol: str = "",
+    is_ats: bool = True,
+    offset: int = 0,
 ) -> requests.Response:
     """Get FINRA data. [Source: FINRA]
 
     Parameters
     ----------
-    weekStartDate : str
-        Weekly data to get FINRA data
-    tier : str
+    start_date: str
+        Weekly data to get FINRA data, in YYYY-MM-DD format
+    tier: str
         Stock tier between T1, T2, or OTCE
-    ticker : str
+    symbol: str
         Stock ticker to get data from
-    is_ats : bool
+    is_ats: bool
         ATS data if true, NON-ATS otherwise
-    offset : int
+    offset: int
         Offset in getting the data
 
     Returns
@@ -90,7 +97,7 @@ def getFINRAdata_offset(
         {
             "compareType": "EQUAL",
             "fieldName": "weekStartDate",
-            "fieldValue": weekStartDate,
+            "fieldValue": start_date,
         },
         {"compareType": "EQUAL", "fieldName": "tierIdentifier", "fieldValue": tier},
         {
@@ -101,12 +108,12 @@ def getFINRAdata_offset(
         },
     ]
 
-    if ticker:
+    if symbol:
         l_cmp_filters.append(
             {
                 "compareType": "EQUAL",
                 "fieldName": "issueSymbolIdentifier",
-                "fieldValue": ticker,
+                "fieldValue": symbol,
             }
         )
 
@@ -125,35 +132,34 @@ def getFINRAdata_offset(
         "sortFields": ["totalWeeklyShareQuantity"],
     }
 
-    return requests.post(
+    return request(
         "https://api.finra.org/data/group/otcMarket/name/weeklySummary",
+        method="POST",
         headers=req_hdr,
         json=req_data,
     )
 
 
 def getFINRAdata(
-    weekStartDate: str, tier: str, ticker: str, is_ats: bool
+    start_date: str, symbol: str = "", tier: str = "T1", is_ats: bool = True
 ) -> Tuple[int, List]:
     """Get FINRA data. [Source: FINRA]
 
     Parameters
     ----------
-    weekStartDate : str
-        Weekly data to get FINRA data
+    start_date : str
+        Weekly data to get FINRA data, in YYYY-MM-DD format
+    symbol : str
+        Stock ticker to get data from
     tier : str
         Stock tier between T1, T2, or OTCE
-    ticker : str
-        Stock ticker to get data from
     is_ats : bool
         ATS data if true, NON-ATS otherwise
 
     Returns
     -------
-    int
-        Status code from request
-    List
-        List of response data
+    Tuple[int, List]
+        Status code from request, List of response data
     """
     req_hdr = {"Accept": "application/json", "Content-Type": "application/json"}
 
@@ -161,7 +167,7 @@ def getFINRAdata(
         {
             "compareType": "EQUAL",
             "fieldName": "weekStartDate",
-            "fieldValue": weekStartDate,
+            "fieldValue": start_date,
         },
         {"compareType": "EQUAL", "fieldName": "tierIdentifier", "fieldValue": tier},
         {
@@ -172,12 +178,12 @@ def getFINRAdata(
         },
     ]
 
-    if ticker:
+    if symbol:
         l_cmp_filters.append(
             {
                 "compareType": "EQUAL",
                 "fieldName": "issueSymbolIdentifier",
-                "fieldValue": ticker,
+                "fieldValue": symbol,
             }
         )
 
@@ -195,8 +201,9 @@ def getFINRAdata(
         "sortFields": ["totalWeeklyShareQuantity"],
     }
 
-    response = requests.post(
+    response = request(
         "https://api.finra.org/data/group/otcMarket/name/weeklySummary",
+        method="POST",
         headers=req_hdr,
         json=req_data,
     )
@@ -208,27 +215,22 @@ def getFINRAdata(
 
 
 @log_start_end(log=logger)
-def getATSdata(num_tickers_to_filter: int, tier_ats: str) -> Tuple[pd.DataFrame, Dict]:
+def getATSdata(limit: int = 1000, tier_ats: str = "T1") -> Tuple[pd.DataFrame, Dict]:
     """Get all FINRA ATS data, and parse most promising tickers based on linear regression
 
     Parameters
     ----------
-    num_tickers_to_filter : int
+    limit: int
         Number of tickers to filter from entire ATS data based on the sum of the total weekly shares quantity
     tier_ats : int
-        Tier to process data from
+        Tier to process data from: T1, T2 or OTCE
 
     Returns
     -------
-    pd.DataFrame
-        Dark Pools (ATS) Data
-    Dict
-        Tickers from Dark Pools with better regression slope
+    Tuple[pd.DataFrame, Dict]
+        Dark Pools (ATS) Data, Tickers from Dark Pools with better regression slope
     """
-    if tier_ats:
-        tiers = [tier_ats]
-    else:
-        tiers = ["T1", "T2", "OTCE"]
+    tiers = [tier_ats] if tier_ats else ["T1", "T2", "OTCE"]
     df_ats = pd.DataFrame()
 
     for tier in tiers:
@@ -251,58 +253,56 @@ def getATSdata(num_tickers_to_filter: int, tier_ats: str) -> Tuple[pd.DataFrame,
             df_ats_week["weekStartDate"] = d_week["weekStartDate"]
 
             if not df_ats_week.empty:
-                df_ats = df_ats.append(df_ats_week, ignore_index=True)
+                # df_ats = df_ats.append(df_ats_week, ignore_index=True)
+                df_ats = pd.concat([df_ats, df_ats_week], ignore_index=True)
 
-    df_ats = df_ats.sort_values("weekStartDate")
-    df_ats["weekStartDateInt"] = pd.to_datetime(df_ats["weekStartDate"]).apply(
-        lambda x: x.timestamp()
-    )
+    if not df_ats.empty:
+        df_ats = df_ats.sort_values("weekStartDate")
+        df_ats["weekStartDateInt"] = pd.to_datetime(df_ats["weekStartDate"]).apply(
+            lambda x: x.timestamp()
+        )
 
-    console.print(
-        f"Processing regression on {num_tickers_to_filter} promising tickers ..."
-    )
+        console.print(f"Processing regression on {limit} promising tickers ...")
 
-    d_ats_reg = {}
-    # set(df_ats['issueSymbolIdentifier'].values) this would be iterating through all tickers
-    # but that is extremely time consuming for little reward. A little filtering is done to
-    # speed up search for best ATS tickers
-    for symbol in list(
-        df_ats.groupby("issueSymbolIdentifier")["totalWeeklyShareQuantity"]
-        .sum()
-        .sort_values()[-num_tickers_to_filter:]
-        .index
-    ):
-        try:
-            slope = stats.linregress(
-                df_ats[df_ats["issueSymbolIdentifier"] == symbol][
-                    "weekStartDateInt"
-                ].values,
-                df_ats[df_ats["issueSymbolIdentifier"] == symbol][
-                    "totalWeeklyShareQuantity"
-                ].values,
-            )[0]
-            d_ats_reg[symbol] = slope
-        except Exception:
-            pass
+        d_ats_reg = {}
+        # set(df_ats['issueSymbolIdentifier'].values) this would be iterating through all tickers
+        # but that is extremely time consuming for little reward. A little filtering is done to
+        # speed up search for best ATS tickers
+        for symbol in list(
+            df_ats.groupby("issueSymbolIdentifier")["totalWeeklyShareQuantity"]
+            .sum()
+            .sort_values()[-limit:]
+            .index
+        ):
+            try:
+                slope = stats.linregress(
+                    df_ats[df_ats["issueSymbolIdentifier"] == symbol][
+                        "weekStartDateInt"
+                    ].values,
+                    df_ats[df_ats["issueSymbolIdentifier"] == symbol][
+                        "totalWeeklyShareQuantity"
+                    ].values,
+                )[0]
+                d_ats_reg[symbol] = slope
+            except Exception:  # nosec B110 # noqa: S110
+                pass
 
     return df_ats, d_ats_reg
 
 
 @log_start_end(log=logger)
-def getTickerFINRAdata(ticker: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def getTickerFINRAdata(symbol: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Get all FINRA data associated with a ticker
 
     Parameters
     ----------
-    ticker : str
+    symbol : str
         Stock ticker to get data from
 
     Returns
     -------
-    pd.DataFrame
-        Dark Pools (ATS) Data
-    pd.DataFrame
-        OTC (Non-ATS) Data
+    Tuple[pd.DataFrame, pd.DataFrame]
+        Dark Pools (ATS) Data, OTC (Non-ATS) Data
     """
     tiers = ["T1", "T2", "OTCE"]
 
@@ -310,11 +310,11 @@ def getTickerFINRAdata(ticker: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     for tier in tiers:
         for d_week in getFINRAweeks(tier, is_ats=True):
             status_code, response = getFINRAdata(
-                d_week["weekStartDate"], tier, ticker, True
+                d_week["weekStartDate"], symbol, tier, True
             )
             if status_code == 200:
                 if response:
-                    d_data = response[0]
+                    d_data: dict = response[0]
                     d_data.update(d_week)
                     l_data.append(d_data)
                 else:
@@ -329,7 +329,7 @@ def getTickerFINRAdata(ticker: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     for tier in tiers:
         for d_week in getFINRAweeks(tier, is_ats=False):
             status_code, response = getFINRAdata(
-                d_week["weekStartDate"], tier, ticker, False
+                d_week["weekStartDate"], symbol, tier, False
             )
             if status_code == 200:
                 if response:

@@ -1,33 +1,36 @@
 """Cryptocurrency Discovery Controller"""
+
 __docformat__ = "numpy"
 
 # pylint: disable=R0904, C0302, W0622, C0201
 import argparse
 import logging
-from typing import List
+from datetime import datetime, timedelta
+from typing import List, Optional
 
-from prompt_toolkit.completion import NestedCompleter
-
-from openbb_terminal import feature_flags as obbff
+from openbb_terminal.core.session.current_user import get_current_user
 from openbb_terminal.cryptocurrency.discovery import (
     coinmarketcap_model,
     coinmarketcap_view,
     coinpaprika_model,
     coinpaprika_view,
+    cryptostats_view,
     dappradar_model,
     dappradar_view,
     pycoingecko_model,
     pycoingecko_view,
 )
+from openbb_terminal.custom_prompt_toolkit import NestedCompleter
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.helper_funcs import (
     EXPORT_ONLY_RAW_DATA_ALLOWED,
     check_positive,
-    parse_known_args_and_warn,
+    valid_date,
 )
 from openbb_terminal.menu import session
 from openbb_terminal.parent_classes import BaseController
-from openbb_terminal.rich_config import console
+from openbb_terminal.rich_config import MenuText, console, get_ordered_list_sources
+from openbb_terminal.stocks import stocks_helper
 
 logger = logging.getLogger(__name__)
 
@@ -36,87 +39,166 @@ class DiscoveryController(BaseController):
     """Discovery Controller class"""
 
     CHOICES_COMMANDS = [
-        "cpsearch",
-        "cmctop",
-        "cgtrending",
-        "cggainers",
-        "cglosers",
-        "cgtop",
-        "drnft",
-        "drgames",
-        "drdapps",
-        "drdex",
+        "search",
+        "top",
+        "trending",
+        "gainers",
+        "losers",
+        "nft_mktp_chains",
+        "nft_mktp",
+        "dapps",
+        "fees",
+        "dapp_categories",
+        "dapp_chains",
+        "dapp_metrics",
+        "defi_chains",
+        "tokens",
     ]
 
     PATH = "/crypto/disc/"
+    CHOICES_GENERATION = True
 
-    def __init__(self, queue: List[str] = None):
+    def __init__(self, queue: Optional[List[str]] = None):
         """Constructor"""
         super().__init__(queue)
 
-        if session and obbff.USE_PROMPT_TOOLKIT:
-            choices: dict = {c: {} for c in self.controller_choices}
-            choices["cggainers"]["-p"] = {c: {} for c in pycoingecko_model.API_PERIODS}
-            choices["cggainers"]["--sort"] = {
-                c: {} for c in pycoingecko_model.GAINERS_LOSERS_COLUMNS
-            }
-            choices["cglosers"]["--sort"] = {
-                c: {} for c in pycoingecko_model.GAINERS_LOSERS_COLUMNS
-            }
-            choices["cglosers"]["-p"] = {c: {} for c in pycoingecko_model.API_PERIODS}
-            choices["cgtop"] = {
-                c: None for c in pycoingecko_model.get_categories_keys()
-            }
-            choices["cgtop"]["--category"] = {
-                c: None for c in pycoingecko_model.get_categories_keys()
-            }
-            choices["cgtop"]["--sort"] = {
-                c: None for c in pycoingecko_view.COINS_COLUMNS
-            }
-            choices["cmctop"]["-s"] = {c: {} for c in coinmarketcap_model.FILTERS}
-            choices["cpsearch"]["-s"] = {c: {} for c in coinpaprika_model.FILTERS}
-            choices["cpsearch"]["-c"] = {c: {} for c in coinpaprika_model.CATEGORIES}
-            choices["drnft"]["--sort"] = {c: {} for c in dappradar_model.NFT_COLUMNS}
-            choices["drgames"]["--sort"] = {c: {} for c in dappradar_model.DEX_COLUMNS}
-            choices["drdex"]["--sort"] = {c: {} for c in dappradar_model.DEX_COLUMNS}
-            choices["drdapps"]["--sort"] = {
-                c: {} for c in dappradar_model.DAPPS_COLUMNS
-            }
+        if session and get_current_user().preferences.USE_PROMPT_TOOLKIT:
+            choices: dict = self.choices_default
+
+            ordered_list_sources_top = get_ordered_list_sources(f"{self.PATH}top")
+            if ordered_list_sources_top and ordered_list_sources_top[0] == "CoinGecko":
+                choices["top"]["--sort"] = {
+                    c: {}
+                    for c in stocks_helper.format_parse_choices(
+                        pycoingecko_view.COINS_COLUMNS
+                    )
+                }
+            else:
+                choices["top"]["--sort"] = {
+                    c: {}
+                    for c in stocks_helper.format_parse_choices(
+                        coinmarketcap_model.FILTERS
+                    )
+                }
+
+            choices["top"]["-s"] = choices["top"]["--sort"]
+
             self.completer = NestedCompleter.from_nested_dict(choices)
 
     def print_help(self):
         """Print help"""
-        help_text = """[cmds]
-[src][CoinGecko][/src]
-    cgtop             top coins (with or without category)
-    cgtrending        trending coins
-    cggainers         top gainers - coins which price gained the most in given period
-    cglosers          top losers - coins which price dropped the most in given period
-[src][CoinPaprika][/src]
-    cpsearch          search for coins
-[src][CoinMarketCap][/src]
-    cmctop            top coins
-[src][DappRadar][/src]
-    drnft             top non fungible tokens
-    drgames           top blockchain games
-    drdapps           top decentralized apps
-    drdex             top decentralized exchanges
-[/cmds]
-"""
-        console.print(text=help_text, menu="Cryptocurrency - Discovery")
+        mt = MenuText("crypto/disc/")
+        mt.add_cmd("top")
+        mt.add_cmd("trending")
+        mt.add_cmd("gainers")
+        mt.add_cmd("losers")
+        mt.add_cmd("search")
+        mt.add_cmd("nft_mktp_chains")
+        mt.add_cmd("nft_mktp")
+        mt.add_cmd("dapps")
+        mt.add_cmd("fees")
+        mt.add_cmd("dapp_categories")
+        mt.add_cmd("dapp_chains")
+        mt.add_cmd("dapp_metrics")
+        mt.add_cmd("defi_chains")
+        mt.add_cmd("tokens")
+        console.print(text=mt.menu_text, menu="Cryptocurrency - Discovery")
 
     @log_start_end(log=logger)
-    def call_cgtop(self, other_args):
-        """Process cgtop command"""
+    def call_fees(self, other_args: List[str]):
+        """Process fees command"""
+
         parser = argparse.ArgumentParser(
-            prog="cgtop",
+            prog="fees",
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-            description="""Display N coins from CoinGecko [Source: CoinGecko]
+            description="""
+            Cryptos where users pay most fees on [Source: CryptoStats]
+            """,
+        )
+
+        parser.add_argument(
+            "--mc",
+            action="store_true",
+            dest="marketcap",
+            default=False,
+            help="Include the market cap rank",
+        )
+        parser.add_argument(
+            "--tvl",
+            action="store_true",
+            dest="tvl",
+            default=False,
+            help="Include the total value locked",
+        )
+
+        parser.add_argument(
+            "-d",
+            "--date",
+            dest="date",
+            type=valid_date,
+            help="Initial date. Default: yesterday",
+            default=(datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
+        )
+
+        parser.add_argument(
+            "-s",
+            "--sort",
+            dest="sortby",
+            nargs="+",
+            help="Sort by given column. Default: One Day Fees",
+            default="One Day Fees",
+            choices=["One Day Fees", "Market Cap Rank"],
+            metavar="SORTBY",
+        )
+
+        parser.add_argument(
+            "-r",
+            "--reverse",
+            action="store_true",
+            dest="reverse",
+            default=False,
+            help=(
+                "Data is sorted in descending order by default. "
+                "Reverse flag will sort it in an ascending way. "
+                "Only works when raw data is displayed."
+            ),
+        )
+
+        ns_parser = self.parse_known_args_and_warn(
+            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED, limit=10
+        )
+
+        if ns_parser:
+            cryptostats_view.display_fees(
+                marketcap=ns_parser.marketcap,
+                tvl=ns_parser.tvl,
+                date=ns_parser.date,
+                limit=ns_parser.limit,
+                sortby=ns_parser.sortby,
+                ascend=ns_parser.reverse,
+                export=ns_parser.export,
+            )
+
+    @log_start_end(log=logger)
+    def call_top(self, other_args):
+        """Process top command"""
+        ordered_list_sources_top = get_ordered_list_sources(f"{self.PATH}top")
+
+        if ordered_list_sources_top and ordered_list_sources_top[0] == "CoinGecko":
+            argument_sort_default = "Market Cap Rank"
+        else:
+            argument_sort_default = "CMC_Rank"
+
+        parser = argparse.ArgumentParser(
+            prog="top",
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            description="""Display N coins from the data source, if the data source is CoinGecko it
             can receive a category as argument (-c decentralized-finance-defi or -c stablecoins)
             and will show only the top coins in that category.
-            can also receive sort arguments, e.g., --sort Volume [$]
-            You can sort by {Symbol,Name,Price [$],Market Cap [$],Market Cap Rank,Volume [$]}
+            can also receive sort arguments (these depend on the source), e.g., --sort Volume [$]
+            You can sort by {Symbol,Name,Price [$],Market Cap,Market Cap Rank,Volume [$]} with CoinGecko
             Number of coins to show: -l 10
             """,
         )
@@ -126,7 +208,9 @@ class DiscoveryController(BaseController):
             "--category",
             default="",
             dest="category",
-            help="Category (e.g., stablecoins). Empty for no category",
+            help="Category (e.g., stablecoins). Empty for no category. Only works for 'CoinGecko' source.",
+            choices=pycoingecko_model.get_categories_keys(),
+            metavar="CATEGORY",
         )
 
         parser.add_argument(
@@ -143,203 +227,218 @@ class DiscoveryController(BaseController):
             dest="sortby",
             nargs="+",
             help="Sort by given column. Default: Market Cap Rank",
-            default="Market Cap Rank",
+            default=stocks_helper.format_parse_choices([argument_sort_default]),
+            metavar="SORTBY",
         )
 
-        if other_args and not other_args[0][0] == "-":
+        parser.add_argument(
+            "-r",
+            "--reverse",
+            action="store_true",
+            dest="reverse",
+            default=False,
+            help=(
+                "Data is sorted in descending order by default. "
+                "Reverse flag will sort it in an ascending way. "
+                "Only works when raw data is displayed."
+            ),
+        )
+        if other_args and other_args[0][0] != "-":
             other_args.insert(0, "-c")
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
-            pycoingecko_view.display_coins(
-                sortby=" ".join(ns_parser.sortby),
-                category=ns_parser.category,
-                top=ns_parser.limit,
-                export=ns_parser.export,
-            )
+            if ns_parser.source == "CoinGecko":
+                pycoingecko_view.display_coins(
+                    sortby=" ".join(ns_parser.sortby),
+                    category=ns_parser.category,
+                    limit=ns_parser.limit,
+                    export=ns_parser.export,
+                    sheet_name=(
+                        " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                    ),
+                    ascend=ns_parser.reverse,
+                )
+            elif ns_parser.source == "CoinMarketCap":
+                coinmarketcap_view.display_cmc_top_coins(
+                    limit=ns_parser.limit,
+                    sortby=ns_parser.sortby,
+                    ascend=ns_parser.reverse,
+                    export=ns_parser.export,
+                    sheet_name=(
+                        " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                    ),
+                )
 
     @log_start_end(log=logger)
-    def call_drdapps(self, other_args):
-        """Process drdapps command"""
+    def call_dapps(self, other_args):
+        """Process dapps command"""
         parser = argparse.ArgumentParser(
-            prog="drdapps",
+            prog="dapps",
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="""
-            Shows top decentralized applications [Source: https://dappradar.com/]
-            Accepts --sort {Name,Category,Protocols,Daily Users,Daily Volume [$]}
-            to sort by column
+            Shows available decentralized applications [Source: https://dappradar.com/]
+            Accepts --chain argument to filter by blockchain
+                    --page argument to show a specific page. Default: 1
+                    --limit argument to limit the number of records per page. Default: 15
             """,
         )
-
+        parser.add_argument(
+            "-c",
+            "--chain",
+            dest="chain",
+            help="Filter by blockchain",
+            metavar="CHAIN",
+        )
+        parser.add_argument(
+            "-p",
+            "--page",
+            dest="page",
+            type=check_positive,
+            help="Page number",
+            default=1,
+        )
         parser.add_argument(
             "-l",
             "--limit",
             dest="limit",
             type=check_positive,
-            help="Number of records to display",
+            help="Number of records to display per page",
             default=15,
         )
-        parser.add_argument(
-            "-s",
-            "--sort",
-            dest="sortby",
-            nargs="+",
-            help="Sort by given column. Default: Daily Volume [$]",
-            default="Daily Volume [$]",
-        )
-        ns_parser = parse_known_args_and_warn(
+
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
-            dappradar_view.display_top_dapps(
-                sortby=" ".join(ns_parser.sortby),
-                top=ns_parser.limit,
+            dappradar_view.display_dapps(
+                chain=ns_parser.chain,
+                page=ns_parser.page,
+                resultPerPage=ns_parser.limit,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
-    def call_drgames(self, other_args):
-        """Process drgames command"""
+    def call_dapp_categories(self, other_args):
+        """Process dapp_categories command"""
         parser = argparse.ArgumentParser(
-            prog="drgames",
+            prog="dapp_categories",
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="""
-            Shows top blockchain games [Source: https://dappradar.com/]
-            Accepts --sort {Name,Daily Users,Daily Volume [$]}
-            to sort by column
+            Shows available dapp categories [Source: https://dappradar.com/]
             """,
         )
-
-        parser.add_argument(
-            "-l",
-            "--limit",
-            dest="limit",
-            type=check_positive,
-            help="Number of records to display",
-            default=15,
-        )
-        parser.add_argument(
-            "-s",
-            "--sort",
-            dest="sortby",
-            nargs="+",
-            help="Sort by given column. Default: Daily Volume [$]",
-            default="Daily Volume [$]",
-        )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
-            dappradar_view.display_top_games(
-                sortby=" ".join(ns_parser.sortby),
-                top=ns_parser.limit,
+            dappradar_view.display_dapp_categories(
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
-    def call_drdex(self, other_args):
-        """Process drdex command"""
+    def call_dapp_chains(self, other_args):
+        """Process dapp_chains command"""
         parser = argparse.ArgumentParser(
-            prog="drdex",
+            prog="dapp_chains",
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="""
-            Shows top decentralized exchanges [Source: https://dappradar.com/]
-            Accepts --sort {Name,Daily Users,Daily Volume [$]}
-            to sort by column
+            Shows available dapp chains [Source: https://dappradar.com/]
             """,
         )
-
-        parser.add_argument(
-            "-l",
-            "--limit",
-            dest="limit",
-            type=check_positive,
-            help="Number of records to display",
-            default=15,
-        )
-        parser.add_argument(
-            "-s",
-            "--sort",
-            dest="sortby",
-            nargs="+",
-            help="Sort by given column. Default: Daily Volume [$]",
-            default="Daily Volume [$]",
-        )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
-            dappradar_view.display_top_dexes(
-                sortby=" ".join(ns_parser.sortby),
-                top=ns_parser.limit,
+            dappradar_view.display_dapp_chains(
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
-    def call_drnft(self, other_args):
-        """Process drnft command"""
+    def call_dapp_metrics(self, other_args):
+        """Process dapp_metrics command"""
         parser = argparse.ArgumentParser(
-            prog="drnft",
+            prog="dapp_metrics",
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="""
-            Shows top NFT collections [Source: https://dappradar.com/]
-            Accepts --sort {Name,Protocols,Floor Price [$],Avg Price [$],Market Cap [$],Volume [$]}
-            to sort by column
+            Shows dapp metrics [Source: https://dappradar.com/]
+            Accepts --dappId argument to specify the dapp
+                    --chain argument to filter by blockchain for multi-chain dapps
+                    --time_range argument to specify the time range. Default: 7d (can be 24h, 7d, 30d)
             """,
         )
-
         parser.add_argument(
-            "-l",
-            "--limit",
-            dest="limit",
-            type=check_positive,
-            help="Number of records to display",
-            default=15,
+            "-d",
+            "--dappId",
+            dest="dappId",
+            help="Dapp ID",
+            metavar="DAPP_ID",
         )
         parser.add_argument(
-            "-s",
-            "--sort",
-            dest="sortby",
-            nargs="+",
-            help="Sort by given column. Default: Market Cap [$]",
-            default="Market Cap [$]",
+            "-c",
+            "--chain",
+            dest="chain",
+            help="Filter by blockchain",
+            metavar="CHAIN",
+        )
+        parser.add_argument(
+            "-t",
+            "--time_range",
+            dest="time_range",
+            help="Time range",
+            metavar="TIME_RANGE",
+            choices=["24h", "7d", "30d"],
+            default="7d",
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
-            dappradar_view.display_top_nfts(
-                sortby=" ".join(ns_parser.sortby),
-                top=ns_parser.limit,
+            dappradar_view.display_dapp_metrics(
+                dappId=ns_parser.dappId,
+                chain=ns_parser.chain,
+                time_range=ns_parser.time_range,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
-    def call_cggainers(self, other_args):
+    def call_gainers(self, other_args):
         """Process gainers command"""
         parser = argparse.ArgumentParser(
-            prog="cggainers",
+            prog="gainers",
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="""
             Shows Largest Gainers - coins which gain the most in given period.
-            You can use parameter --period to set which timeframe are you interested in: {14d,1h,1y,200d,24h,30d,7d}
+            You can use parameter --interval to set which timeframe are you interested in: {14d,1h,1y,200d,24h,30d,7d}
             You can look on only N number of records with --limit,
-            You can sort by {Symbol,Name,Price [$],Market Cap [$],Market Cap Rank,Volume [$]} with --sort.
+            You can sort by {Symbol,Name,Price [$],Market Cap,Market Cap Rank,Volume [$]} with --sort.
             """,
         )
 
         parser.add_argument(
-            "-p",
-            "--period",
-            dest="period",
+            "-i",
+            "--interval",
+            dest="interval",
             type=str,
             help="time period, one from {14d,1h,1y,200d,24h,30d,7d}",
             default="1h",
@@ -361,45 +460,64 @@ class DiscoveryController(BaseController):
             dest="sortby",
             nargs="+",
             help="Sort by given column. Default: Market Cap Rank",
-            default="Market Cap Rank",
+            default=["market_cap"],
+            choices=stocks_helper.format_parse_choices(
+                pycoingecko_model.GAINERS_LOSERS_COLUMNS
+            ),
+            metavar="SORTBY",
+        )
+        parser.add_argument(
+            "-r",
+            "--reverse",
+            action="store_true",
+            dest="reverse",
+            default=False,
+            help=(
+                "Data is sorted in descending order by default. "
+                "Reverse flag will sort it in an ascending way. "
+                "Only works when raw data is displayed."
+            ),
         )
 
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
             pycoingecko_view.display_gainers(
-                period=ns_parser.period,
-                top=ns_parser.limit,
+                interval=ns_parser.interval,
+                limit=ns_parser.limit,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
                 sortby=" ".join(ns_parser.sortby),
+                ascend=ns_parser.reverse,
             )
 
     @log_start_end(log=logger)
-    def call_cglosers(self, other_args):
+    def call_losers(self, other_args):
         """Process losers command"""
         parser = argparse.ArgumentParser(
-            prog="cglosers",
+            prog="losers",
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="""
            Shows Largest Losers - coins which price dropped the most in given period
-           You can use parameter --period to set which timeframe are you interested in: {14d,1h,1y,200d,24h,30d,7d}
+           You can use parameter --interval to set which timeframe are you interested in: {14d,1h,1y,200d,24h,30d,7d}
            You can look on only N number of records with --limit,
-           You can sort by {Symbol,Name,Price [$],Market Cap [$],Market Cap Rank,Volume [$]} with --sort.
+           You can sort by {Symbol,Name,Price [$],Market Cap,Market Cap Rank,Volume [$]} with --sort.
             """,
         )
 
         parser.add_argument(
-            "-p",
-            "--period",
-            dest="period",
+            "-i",
+            "--interval",
+            dest="interval",
             type=str,
             help="time period, one from {14d,1h,1y,200d,24h,30d,7d}",
             default="1h",
             choices=pycoingecko_model.API_PERIODS,
         )
-
         parser.add_argument(
             "-l",
             "--limit",
@@ -408,112 +526,84 @@ class DiscoveryController(BaseController):
             help="Number of records to display",
             default=15,
         )
-
         parser.add_argument(
             "-s",
             "--sort",
             dest="sortby",
             nargs="+",
             help="Sort by given column. Default: Market Cap Rank",
-            default="Market Cap Rank",
+            default=["Market Cap"],
+            choices=stocks_helper.format_parse_choices(
+                pycoingecko_model.GAINERS_LOSERS_COLUMNS
+            ),
+            metavar="SORTBY",
         )
-
-        ns_parser = parse_known_args_and_warn(
+        parser.add_argument(
+            "-r",
+            "--reverse",
+            action="store_true",
+            dest="reverse",
+            default=False,
+            help=(
+                "Data is sorted in descending order by default. "
+                "Reverse flag will sort it in an ascending way. "
+                "Only works when raw data is displayed."
+            ),
+        )
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
-
         if ns_parser:
             pycoingecko_view.display_losers(
-                period=ns_parser.period,
-                top=ns_parser.limit,
+                interval=ns_parser.interval,
+                limit=ns_parser.limit,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
                 sortby=" ".join(ns_parser.sortby),
+                ascend=ns_parser.reverse,
             )
 
     @log_start_end(log=logger)
-    def call_cgtrending(self, other_args):
+    def call_trending(self, other_args):
         """Process trending command"""
         parser = argparse.ArgumentParser(
-            prog="cgtrending",
+            prog="trending",
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-            description="""Discover trending coins.
-                Use --limit parameter to display only N number of records,
+            description="""Discover trending coins (Top-7) on CoinGecko in the last 24 hours
             """,
         )
 
-        ns_parser = parse_known_args_and_warn(
-            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
+        ns_parser = self.parse_known_args_and_warn(
+            parser,
+            other_args,
+            EXPORT_ONLY_RAW_DATA_ALLOWED,
         )
         if ns_parser:
             pycoingecko_view.display_trending(
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
-    def call_cmctop(self, other_args):
-        """Process cmctop command"""
-        parser = argparse.ArgumentParser(
-            prog="cmctop",
-            add_help=False,
-            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-            description="This gets the top ranked coins from coinmarketcap.com",
-        )
-
-        parser.add_argument(
-            "-l",
-            "--limit",
-            default=15,
-            dest="limit",
-            help="Limit of records",
-            type=check_positive,
-        )
-
-        parser.add_argument(
-            "-s",
-            "--sort",
-            dest="sortby",
-            type=str,
-            help="column to sort data by.",
-            default="CMC_Rank",
-            choices=coinmarketcap_model.FILTERS,
-        )
-
-        parser.add_argument(
-            "--descend",
-            action="store_false",
-            help="Flag to sort in descending order (lowest first)",
-            dest="descend",
-            default=True,
-        )
-
-        ns_parser = parse_known_args_and_warn(
-            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
-        )
-        if ns_parser:
-            coinmarketcap_view.display_cmc_top_coins(
-                top=ns_parser.limit,
-                sortby=ns_parser.sortby,
-                descend=ns_parser.descend,
-                export=ns_parser.export,
-            )
-
-    @log_start_end(log=logger)
-    def call_cpsearch(self, other_args):
+    def call_search(self, other_args):
         """Process search command"""
         parser = argparse.ArgumentParser(
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-            prog="cpsearch",
+            prog="search",
             description="""Search over CoinPaprika API
             You can display only N number of results with --limit parameter.
-            You can sort data by id, name , category --sort parameter and also with --descend flag to sort descending.
+            You can sort data by id, name , category --sort parameter and also with --reverse flag to sort descending.
             To choose category in which you are searching for use --cat/-c parameter. Available categories:
             currencies|exchanges|icos|people|tags|all
             Displays:
                 id, name, category""",
         )
-
         parser.add_argument(
             "-q",
             "--query",
@@ -523,17 +613,15 @@ class DiscoveryController(BaseController):
             type=str,
             required="-h" not in other_args,
         )
-
         parser.add_argument(
             "-c",
-            "--cat",
+            "--category",
             help="Categories to search: currencies|exchanges|icos|people|tags|all. Default: all",
             dest="category",
             default="all",
             type=str,
             choices=coinpaprika_model.CATEGORIES,
         )
-
         parser.add_argument(
             "-l",
             "--limit",
@@ -542,7 +630,6 @@ class DiscoveryController(BaseController):
             help="Limit of records",
             type=check_positive,
         )
-
         parser.add_argument(
             "-s",
             "--sort",
@@ -552,28 +639,164 @@ class DiscoveryController(BaseController):
             default="id",
             choices=coinpaprika_model.FILTERS,
         )
-
         parser.add_argument(
-            "--descend",
-            action="store_false",
-            help="Flag to sort in descending order (lowest first)",
-            dest="descend",
-            default=True,
+            "-r",
+            "--reverse",
+            action="store_true",
+            dest="reverse",
+            default=False,
+            help=(
+                "Data is sorted in descending order by default. "
+                "Reverse flag will sort it in an ascending way. "
+                "Only works when raw data is displayed."
+            ),
         )
+        if other_args and other_args[0][0] != "-":
+            other_args.insert(0, "-q")
 
-        if other_args:
-            if not other_args[0][0] == "-":
-                other_args.insert(0, "-q")
-
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
             coinpaprika_view.display_search_results(
-                top=ns_parser.limit,
+                limit=ns_parser.limit,
                 sortby=ns_parser.sortby,
-                descend=ns_parser.descend,
+                ascend=ns_parser.reverse,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
                 query=" ".join(ns_parser.query),
                 category=ns_parser.category,
+            )
+
+    @log_start_end(log=logger)
+    def call_nft_mktp_chains(self, other_args):
+        """Process nft_mktp_chains command"""
+        parser = argparse.ArgumentParser(
+            prog="nft_mktp_chains",
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            description="""
+            Shows NFT marketplace chains [Source: https://dappradar.com/]
+            """,
+        )
+
+        ns_parser = self.parse_known_args_and_warn(
+            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
+        )
+
+        if ns_parser:
+            dappradar_view.display_nft_marketplace_chains(
+                export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
+            )
+
+    @log_start_end(log=logger)
+    def call_defi_chains(self, other_args):
+        """Process defi_chains command"""
+        parser = argparse.ArgumentParser(
+            prog="defi_chains",
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            description="""
+            Shows DeFi chains [Source: https://dappradar.com/]
+            """,
+        )
+
+        ns_parser = self.parse_known_args_and_warn(
+            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
+        )
+
+        if ns_parser:
+            dappradar_view.display_defi_chains(
+                export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
+            )
+
+    @log_start_end(log=logger)
+    def call_nft_mktp(self, other_args):
+        """Process nft_mktp command"""
+        parser = argparse.ArgumentParser(
+            prog="nft_mktp",
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            description="""
+            Shows NFT marketplaces [Source: https://dappradar.com/]
+            Accepts --chain  to filter by blockchain
+                    --sortby {name, avgPrice, volume, traders...} to sort by column
+                    --order {asc, desc} to sort ascending or descending
+                    --limit to limit number of records
+            """,
+        )
+        parser.add_argument(
+            "-c",
+            "--chain",
+            dest="chain",
+            help="Name of the blockchain to filter by.",
+        )
+        parser.add_argument(
+            "-s",
+            "--sortby",
+            dest="sortby",
+            nargs="+",
+            help="Sort by given column.",
+            choices=stocks_helper.format_parse_choices(dappradar_model.NFT_COLUMNS),
+            metavar="SORTBY",
+        )
+        parser.add_argument(
+            "-o",
+            "--order",
+            dest="order",
+            help="Order of sorting. Default: desc",
+            default="desc",
+        )
+        parser.add_argument(
+            "-l",
+            "--limit",
+            dest="limit",
+            type=check_positive,
+            help="Number of records to display",
+            default=10,
+        )
+        ns_parser = self.parse_known_args_and_warn(
+            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
+        )
+        if ns_parser:
+            dappradar_view.display_nft_marketplaces(
+                sortby=ns_parser.sortby,
+                order=ns_parser.order,
+                chain=ns_parser.chain,
+                limit=ns_parser.limit,
+                export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
+            )
+
+    @log_start_end(log=logger)
+    def call_tokens(self, other_args):
+        """Process tokens command"""
+        parser = argparse.ArgumentParser(
+            prog="tokens",
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            description="""
+            Shows chains that support tokens [Source: https://dappradar.com/]
+            """,
+        )
+
+        ns_parser = self.parse_known_args_and_warn(
+            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
+        )
+        if ns_parser:
+            dappradar_view.display_token_chains(
+                export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )

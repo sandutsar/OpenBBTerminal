@@ -1,14 +1,14 @@
 """Withdrawal Fees model"""
+
 import logging
 import math
 from typing import Any, List
 
 import pandas as pd
-import requests
 from bs4 import BeautifulSoup
 
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_funcs import get_user_agent
+from openbb_terminal.helper_funcs import get_user_agent, request
 
 logger = logging.getLogger(__name__)
 
@@ -117,23 +117,24 @@ POSSIBLE_CRYPTOS = [
 
 
 @log_start_end(log=logger)
-def get_overall_withdrawal_fees(top: int = 100) -> pd.DataFrame:
+def get_overall_withdrawal_fees(limit: int = 100) -> pd.DataFrame:
     """Scrapes top coins withdrawal fees
     [Source: https://withdrawalfees.com/]
 
     Parameters
     ----------
-    top: int
+    limit: int
         Number of coins to search, by default n=100, one page has 100 coins, so 1 page is scraped.
+
     Returns
     -------
-    pandas.DataFrame:
+    pd.DataFrame
         Coin, Lowest, Average, Median, Highest, Exchanges Compared
     """
 
     COINS_PER_PAGE = 100
     withdrawal_fees_homepage = BeautifulSoup(
-        requests.get(
+        request(
             "https://withdrawalfees.com/",
             headers={"User-Agent": get_user_agent()},
         ).text,
@@ -146,17 +147,19 @@ def get_overall_withdrawal_fees(top: int = 100) -> pd.DataFrame:
     df = pd.read_html(str(table))[0]
 
     df["Coin"] = [ticker.text for ticker in tickers_html]
-    df["Highest"] = df["Highest"].apply(
-        lambda x: f'{x[:x.index(".")+3]} ({x[x.index(".")+3:]})'
-        if "." in x and isinstance(x, str)
-        else x
+    df["Lowest"] = df["Lowest"].apply(
+        lambda x: (
+            f'{x[:x.index(".")+3]} ({x[x.index(".")+3:]})'
+            if "." in x and isinstance(x, str)
+            else x
+        )
     )
 
-    num_pages = int(math.ceil(top / COINS_PER_PAGE))
+    num_pages = int(math.ceil(limit / COINS_PER_PAGE))
     if num_pages > 1:
         for idx in range(2, num_pages + 1):
             withdrawal_fees_homepage = BeautifulSoup(
-                requests.get(
+                request(
                     f"https://withdrawalfees.com/coins/page/{idx}",
                     headers={"User-Agent": get_user_agent()},
                 ).text,
@@ -167,9 +170,11 @@ def get_overall_withdrawal_fees(top: int = 100) -> pd.DataFrame:
             if table is not None and tickers_html is not None:
                 new_df = pd.read_html(str(table))[0]
                 new_df["Highest"] = new_df["Highest"].apply(
-                    lambda x: f'{x[:x.index(".")+3]} ({x[x.index(".")+3:]})'
-                    if "." in x
-                    else x
+                    lambda x: (
+                        f'{x[:x.index(".")+3]} ({x[x.index(".")+3:]})'
+                        if "." in x
+                        else x
+                    )
                 )
                 new_df["Coin"] = [ticker.text for ticker in tickers_html]
                 df = df.append(new_df)
@@ -182,16 +187,13 @@ def get_overall_exchange_withdrawal_fees() -> pd.DataFrame:
     """Scrapes exchange withdrawal fees
     [Source: https://withdrawalfees.com/]
 
-    Parameters
-    ----------
-
     Returns
     -------
-    pandas.DataFrame:
+    pd.DataFrame
         Exchange, Coins, Lowest, Average, Median, Highest
     """
     exchange_withdrawal_fees = BeautifulSoup(
-        requests.get(
+        request(
             "https://withdrawalfees.com/exchanges",
             headers={"User-Agent": get_user_agent()},
         ).text,
@@ -216,14 +218,15 @@ def get_crypto_withdrawal_fees(
     ----------
     symbol: str
         Coin to check withdrawal fees. By default bitcoin
+
     Returns
     -------
-    List:
-        - str:              Overall statistics (exchanges, lowest, average and median)
-        - pandas.DataFrame: Exchange, Withdrawal Fee, Minimum Withdrawal Amount
+    List
+        - str: Overall statistics (exchanges, lowest, average and median)
+        - pd.DataFrame: Exchange, Withdrawal Fee, Minimum Withdrawal Amount
     """
     crypto_withdrawal_fees = BeautifulSoup(
-        requests.get(
+        request(
             f"https://withdrawalfees.com/coins/{symbol}",
             headers={"User-Agent": get_user_agent()},
         ).text,
@@ -238,14 +241,18 @@ def get_crypto_withdrawal_fees(
         return ["", pd.DataFrame()]
     df = pd.read_html(str(table))[0]
     df["Withdrawal Fee"] = df["Withdrawal Fee"].apply(
-        lambda x: f'{x[:x.index(".")+3]} ({x[x.index(".")+3:]})'
-        if "." in x and isinstance(x, str)
-        else x
+        lambda x: (
+            f'{x[:x.index(".")+3]} ({x[x.index(".")+3:]})'
+            if "." in x and isinstance(x, str)
+            else x
+        )
     )
     df["Minimum Withdrawal Amount"] = df["Minimum Withdrawal Amount"].apply(
-        lambda x: f'{x[:x.index(".")+3]} ({x[x.index(".")+3:]})'
-        if isinstance(x, str) and "." in x
-        else x
+        lambda x: (
+            f'{x[:x.index(".")+3]} ({x[x.index(".")+3:]})'
+            if isinstance(x, str) and "." in x
+            else x
+        )
     )
     df = df.fillna("")
 

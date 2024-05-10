@@ -1,10 +1,12 @@
 """ DCF View """
+
 __docformat__ = "numpy"
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
+import financedatabase as fd
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -18,7 +20,7 @@ from openbb_terminal.helper_funcs import get_rf
 from openbb_terminal.rich_config import console
 from openbb_terminal.stocks.fundamental_analysis import dcf_model, dcf_static
 
-# pylint: disable=C0302
+# pylint: disable=C0302,too-many-arguments,too-many-boolean-expressions
 
 
 logger = logging.getLogger(__name__)
@@ -28,20 +30,22 @@ class CreateExcelFA:
     @log_start_end(log=logger)
     def __init__(
         self,
-        ticker: str,
+        symbol: str,
+        beta: float,
         audit: bool = False,
         ratios: bool = True,
         len_pred: int = 10,
         max_similars: int = 3,
         no_filter: bool = False,
+        growth: bool = False,
     ):
         """
-        Creates a detialed DCF for a given company
+        Creates a detailed DCF for a given company
 
         Parameters
         ----------
-        ticker : str
-            The ticker to create a DCF for
+        symbol : str
+            The ticker symbol to create a DCF for
         audit : bool
             Whether or not to show that the balance sheet and income statement tie-out
         ratios : bool
@@ -49,21 +53,24 @@ class CreateExcelFA:
         len_pred : int
             The number of years to make predictions for before assuming a terminal value
         max_similars : int
-            The maximum number of similar companies to show, will be less if there are not enough similar companies
+            The maximum number of similar companies to show, will be less if there are not enough
         no_filter : bool
             Disable filtering of similar companies to being in the same market cap category
+        growth : bool
+            When true this turns the revenue assumption from linear regression to percentage growth
         """
         self.info: Dict[str, Any] = {
             "len_data": 0,
             "len_pred": len_pred,
             "max_similars": max_similars,
             "rounding": 0,
-            "ticker": ticker,
+            "symbol": symbol,
             "audit": audit,
             "ratios": ratios,
             "no_filter": no_filter,
         }
         self.letter: int = 0
+        self.growth = growth
         self.starts: Dict[str, int] = {"IS": 4, "BS": 18, "CF": 47}
         self.wb: Workbook = Workbook()
         self.ws: Dict[int, Any] = {
@@ -76,12 +83,42 @@ class CreateExcelFA:
             "IS": self.get_data("IS", self.starts["IS"], True),
             "CF": self.get_data("CF", self.starts["CF"], False),
         }
-        self.data: Dict[str, Any] = {
-            "now": datetime.now().strftime("%Y-%m-%d"),
-            "info": yf.Ticker(ticker).info,
-            "t_bill": get_rf(),
-            "r_ff": dcf_model.get_fama_coe(self.info["ticker"]),
-        }
+
+        df_not_created = (
+            (not isinstance(self.df["BS"], pd.DataFrame) and not self.df["BS"])
+            and (not isinstance(self.df["IS"], pd.DataFrame) and not self.df["IS"])
+            and (not isinstance(self.df["CF"], pd.DataFrame) and not self.df["CF"])
+        )
+        equities_database = fd.Equities()
+        self.data: Dict[str, Any] = (
+            {
+                "now": datetime.now().strftime("%Y-%m-%d"),
+                "info": {
+                    "country": equities_database.data.loc[self.info["symbol"]][
+                        "country"
+                    ],
+                    "sector": equities_database.data.loc[self.info["symbol"]]["sector"],
+                    "industry_group": equities_database.data.loc[self.info["symbol"]][
+                        "industry_group"
+                    ],
+                    "industry": equities_database.data.loc[self.info["symbol"]][
+                        "industry"
+                    ],
+                    "beta": beta,
+                },
+                "t_bill": get_rf(),
+                "r_ff": dcf_model.get_fama_coe(self.info["symbol"]),
+                "f_info": yf.Ticker(symbol).fast_info,
+            }
+            if not df_not_created
+            else {}
+        )
+
+        if df_not_created:
+            console.print(
+                "It was not possible to create a DCF for this company.\n"
+                "Please consider that non US-listed companies are not supported."
+            )
 
     @log_start_end(log=logger)
     def create_workbook(self):
@@ -109,19 +146,26 @@ class CreateExcelFA:
 
         i = 0
         while True:
-            path = dcf_model.generate_path(i, self.info["ticker"], self.data["now"])
+            file_name = f"{self.data['now'].replace('-', '')}_dcf_{self.info['symbol']}"
+            path = dcf_model.generate_path(i, file_name)
+            path.parent.mkdir(parents=True, exist_ok=True)
 
             if not path.is_file():
                 self.wb.save(path)
-                console.print(f"Analysis for {self.info['ticker']} At:\n{path}.\n")
+                console.print(
+                    f"Find the Discounted Cash Flow (DCF) Analysis of {self.info['symbol']} here: {path}"
+                )
                 break
             i += 1
 
     @log_start_end(log=logger)
     def get_data(self, statement: str, row: int, header: bool) -> pd.DataFrame:
-        df, rounding, _ = dcf_model.create_dataframe(self.info["ticker"], statement)
+        symbol = self.info["symbol"]
+        df, rounding, _ = dcf_model.create_dataframe(symbol, statement)
         if df.empty:
-            raise ValueError("Could generate a dataframe for the ticker")
+            raise ValueError(
+                f"Could not generate a dataframe for the ticker `{symbol}` and statement `{statement}`."
+            )
         self.info["rounding"] = rounding
         if not self.info["len_data"]:
             self.info["len_data"] = len(df.columns)
@@ -152,7 +196,7 @@ class CreateExcelFA:
 
         column = 1
 
-        for key, value in df.iteritems():
+        for key, value in df.items():
             rowI = row
             if header:
                 dcf_model.set_cell(
@@ -163,7 +207,10 @@ class CreateExcelFA:
                 )
             for item in value:
                 rowI += 1
-                m = 0 if item is None else float(item.replace(",", ""))
+                try:
+                    m = 0 if item is None else float(item.replace(",", ""))
+                except ValueError:
+                    m = 0
                 dcf_model.set_cell(
                     self.ws[1],
                     f"{dcf_static.letters[column]}{rowI}",
@@ -212,12 +259,13 @@ class CreateExcelFA:
         )
         dcf_model.set_cell(self.ws[1], f"{dcf_static.letters[col]}4", "m")
         dcf_model.set_cell(self.ws[1], f"{dcf_static.letters[col+1]}4", "b")
-        self.get_linear("Date", "Revenue")
-        self.get_linear("Revenue", "Cost of Revenue")
+        rev_pred_type = "growth" if self.growth else "linear"
+        self.get_growth("Date", "Revenue", pred_type=rev_pred_type)
+        self.get_growth("Revenue", "Cost of Revenue")
         self.get_sum("Gross Profit", "Revenue", [], ["Cost of Revenue"])
-        self.get_linear("Revenue", "Selling, General & Admin", True)
-        self.get_linear("Revenue", "Research & Development", True)
-        self.get_linear("Revenue", "Other Operating Expenses")
+        self.get_growth("Revenue", "Selling, General & Admin", True)
+        self.get_growth("Revenue", "Research & Development", True)
+        self.get_growth("Revenue", "Other Operating Expenses")
         self.get_sum(
             "Operating Income",
             "Gross Profit",
@@ -228,10 +276,10 @@ class CreateExcelFA:
                 "Other Operating Expenses",
             ],
         )
-        self.get_linear("Revenue", "Preferred Dividends")
-        self.get_linear("Revenue", "Interest Expense / Income")
-        self.get_linear("Revenue", "Other Expense / Income")
-        self.get_linear("Operating Income", "Income Tax")
+        self.get_growth("Revenue", "Preferred Dividends")
+        self.get_growth("Revenue", "Interest Expense / Income")
+        self.get_growth("Revenue", "Other Expense / Income")
+        self.get_growth("Operating Income", "Income Tax")
         self.get_sum(
             "Net Income",
             "Operating Income",
@@ -242,27 +290,27 @@ class CreateExcelFA:
             "Preferred Dividends",
             "Preferred Dividends are not important in a DCF so we do not attempt to predict them.",
         )
-        self.get_linear("Revenue", "Cash & Equivalents", True)
-        self.get_linear("Revenue", "Short-Term Investments", True)
+        self.get_growth("Revenue", "Cash & Equivalents", True)
+        self.get_growth("Revenue", "Short-Term Investments", True)
         self.get_sum(
             "Cash & Cash Equivalents",
             "Cash & Equivalents",
             ["Short-Term Investments"],
             [],
         )
-        self.get_linear("Revenue", "Receivables", True)
-        self.get_linear("Revenue", "Inventory", True)
-        self.get_linear("Revenue", "Other Current Assets")
+        self.get_growth("Revenue", "Receivables", True)
+        self.get_growth("Revenue", "Inventory", True)
+        self.get_growth("Revenue", "Other Current Assets")
         self.get_sum(
             "Total Current Assets",
             "Cash & Cash Equivalents",
             ["Receivables", "Inventory", "Other Current Assets"],
             [],
         )
-        self.get_linear("Revenue", "Property, Plant & Equipment", True)
-        self.get_linear("Revenue", "Long-Term Investments", True)
-        self.get_linear("Revenue", "Goodwill and Intangibles", True)
-        self.get_linear("Revenue", "Other Long-Term Assets")
+        self.get_growth("Revenue", "Property, Plant & Equipment", True)
+        self.get_growth("Revenue", "Long-Term Investments", True)
+        self.get_growth("Revenue", "Goodwill and Intangibles", True)
+        self.get_growth("Revenue", "Other Long-Term Assets")
         self.get_sum(
             "Total Long-Term Assets",
             "Property, Plant & Equipment",
@@ -276,10 +324,10 @@ class CreateExcelFA:
         self.get_sum(
             "Total Assets", "Total Current Assets", ["Total Long-Term Assets"], []
         )
-        self.get_linear("Revenue", "Accounts Payable")
-        self.get_linear("Revenue", "Deferred Revenue")
-        self.get_linear("Revenue", "Current Debt")
-        self.get_linear("Revenue", "Other Current Liabilities")
+        self.get_growth("Revenue", "Accounts Payable")
+        self.get_growth("Revenue", "Deferred Revenue")
+        self.get_growth("Revenue", "Current Debt")
+        self.get_growth("Revenue", "Other Current Liabilities")
         self.get_sum(
             "Total Current Liabilities",
             "Accounts Payable",
@@ -300,7 +348,7 @@ class CreateExcelFA:
                 "nceinstitute.com/resources/questions/model-questions/financial-modeling-plug/"
             ),
         )  # This is the plug
-        self.get_linear("Revenue", "Other Long-Term Liabilities")
+        self.get_growth("Revenue", "Other Long-Term Liabilities")
         self.get_sum(
             "Total Long-Term Liabilities",
             "Long-Term Debt",
@@ -313,7 +361,7 @@ class CreateExcelFA:
             ["Total Long-Term Liabilities"],
             [],
         )
-        self.get_linear("Revenue", "Common Stock")
+        self.get_growth("Revenue", "Common Stock")
         col = self.info["len_data"] + 1
         rer = self.title_to_row("Retained Earnings")
         nir = self.title_to_row("Net Income")
@@ -325,7 +373,7 @@ class CreateExcelFA:
                 num_form="[$$-409]#,##0.00;[RED]-[$$-409]#,##0.00",
             )
 
-        self.get_linear("Revenue", "Comprehensive Income")
+        self.get_growth("Revenue", "Comprehensive Income")
         self.get_sum(
             "Shareholders' Equity",
             "Common Stock",
@@ -551,7 +599,8 @@ class CreateExcelFA:
         dcf_model.set_cell(
             self.ws[2],
             "B14",
-            f"=financials!{dcf_static.letters[self.info['len_data']]}{self.title_to_row('Total Long-Term Liabilities')}",
+            f"=financials!{dcf_static.letters[self.info['len_data']]}"
+            + f"{self.title_to_row('Total Long-Term Liabilities')}",
             num_form="[$$-409]#,##0.00;[RED]-[$$-409]#,##0.00",
         )
         dcf_model.set_cell(self.ws[2], "A15", "Firm value without debt")
@@ -560,27 +609,29 @@ class CreateExcelFA:
             "B15",
             (
                 f"=max(B13-B14,"
-                f"Financials!{dcf_static.letters[self.info['len_data']]}{self.title_to_row('Total Assets')}"
-                f"-Financials!{dcf_static.letters[self.info['len_data']]}{self.title_to_row('Total Liabilities')})"
+                f"Financials!{dcf_static.letters[self.info['len_data']]}"
+                + f"{self.title_to_row('Total Assets')}"
+                f"-Financials!{dcf_static.letters[self.info['len_data']]}"
+                + f"{self.title_to_row('Total Liabilities')})"
             ),
             num_form="[$$-409]#,##0.00;[RED]-[$$-409]#,##0.00",
         )
         dcf_model.set_cell(
             self.ws[2],
             "C15",
-            (
+            *(
                 f"=if((B13-B14)>"
-                f"(Financials!{dcf_static.letters[self.info['len_data']]}{self.title_to_row('Total Assets')}"
-                f"-Financials!{dcf_static.letters[self.info['len_data']]}{self.title_to_row('Total Liabilities')}),"
+                f"(Financials!{dcf_static.letters[self.info['len_data']]}"
+                + f"{self.title_to_row('Total Assets')}"
+                f"-Financials!{dcf_static.letters[self.info['len_data']]}"
+                + f"{self.title_to_row('Total Liabilities')}),"
                 '"","Note: Total assets minus total liabilities exceeds projected firm value without debt.'
-                ' Value shown is total assets minus total liabilities.")'
+                + ' Value shown is total assets minus total liabilities.")',
             ),
             font=dcf_static.red,
         )
         dcf_model.set_cell(self.ws[2], "A16", "Shares Outstanding")
-        dcf_model.set_cell(
-            self.ws[2], "B16", int(self.data["info"]["sharesOutstanding"])
-        )
+        dcf_model.set_cell(self.ws[2], "B16", int(self.data["f_info"]["shares"]))
         dcf_model.set_cell(self.ws[2], "A17", "Shares Price")
         dcf_model.set_cell(
             self.ws[2],
@@ -589,9 +640,7 @@ class CreateExcelFA:
             num_form="[$$-409]#,##0.00;[RED]-[$$-409]#,##0.00",
         )
         dcf_model.set_cell(self.ws[2], "A18", "Actual Price")
-        dcf_model.set_cell(
-            self.ws[2], "B18", float(self.data["info"]["regularMarketPrice"])
-        )
+        dcf_model.set_cell(self.ws[2], "B18", float(self.data["f_info"]["last_price"]))
 
     @log_start_end(log=logger)
     def create_header(self, ws: Workbook):
@@ -604,13 +653,13 @@ class CreateExcelFA:
         dcf_model.set_cell(
             ws,
             "A1",
-            f"OpenBB Terminal Analysis: {self.info['ticker'].upper()}",
+            f"OpenBB Terminal Analysis: {self.info['symbol'].upper()}",
             font=Font(color="04cca8", size=20),
             border=dcf_static.thin_border,
             alignment=dcf_static.center,
         )
         dcf_model.set_cell(
-            ws, "A2", f"DCF for {self.info['ticker']} generated on {self.data['now']}"
+            ws, "A2", f"DCF for {self.info['symbol']} generated on {self.data['now']}"
         )
 
     @log_start_end(log=logger)
@@ -763,38 +812,27 @@ class CreateExcelFA:
         )
 
     @log_start_end(log=logger)
-    def get_linear(self, x_ind: str, y_ind: str, no_neg: bool = False):
+    def get_growth(
+        self, x_ind: str, y_ind: str, no_neg: bool = False, pred_type: str = "linear"
+    ):
+        """Add growth to a column. Usually this is linear but other options are allowed
+
+        x_ind: str
+            The x variable to use. This is unused if growth is the pred_type
+        y_ind: str
+            The y variable to use
+        no_neg: bool
+            Whether or not the value can have negative numbers (profit can be revenue cannot)
+        pred_type: str
+            This is assumed to be linear but growth is allowed as well
+        """
+
         x_type = "IS" if x_ind in self.df["IS"].index else "BS"
         y_type = "IS" if y_ind in self.df["IS"].index else "BS"
         x_df = self.df["IS"] if x_type == "IS" else self.df["BS"]
         y_df = self.df["IS"] if y_type == "IS" else self.df["BS"]
-        pre_x = (
-            x_df.columns.to_numpy() if x_ind == "Date" else x_df.loc[x_ind].to_numpy()
-        )
 
-        vfunc = np.vectorize(dcf_model.string_float)
-        pre_x = vfunc(pre_x)
-
-        if x_ind == "Date":
-            pre_x = pre_x - np.min(pre_x)
-        x = pre_x.reshape((-1, 1))
-        pre_y = y_df.loc[y_ind].to_numpy()
-        y = vfunc(pre_y)
-        model = LinearRegression().fit(x, y)
-        r_sq = model.score(x, y)
-        r = abs(r_sq**0.5)
-
-        if r > 0.9:
-            strength = "very strong"
-        elif r > 0.7:
-            strength = "strong"
-        elif r > 0.5:
-            strength = "moderate"
-        elif r > 0.3:
-            strength = "weak"
-        else:
-            strength = "very weak"
-
+        analy_message = ""
         row1 = (
             y_df.index.get_loc(y_ind)
             + 1
@@ -802,38 +840,101 @@ class CreateExcelFA:
         )
 
         col = self.info["len_pred"] + self.info["len_data"] + 3
-        dcf_model.set_cell(
-            self.ws[1], f"{dcf_static.letters[col]}{row1}", float(model.coef_)
-        )
-        dcf_model.set_cell(
-            self.ws[1], f"{dcf_static.letters[col+1]}{row1}", float(model.intercept_)
-        )
-        dcf_model.set_cell(
-            self.ws[1],
-            f"{dcf_static.letters[col+2]}{row1}",
-            dcf_static.letters[self.letter],
-            font=dcf_static.red,
-        )
-        dcf_model.set_cell(
-            self.ws[3],
-            f"A{self.letter+4}",
-            dcf_static.letters[self.letter],
-            font=dcf_static.red,
-        )
-        dcf_model.set_cell(
-            self.ws[3],
-            f"B{self.letter+4}",
-            (
+        if pred_type == "linear":
+            pre_x = (
+                x_df.columns.to_numpy()
+                if x_ind == "Date"
+                else x_df.loc[x_ind].to_numpy()
+            )
+
+            vfunc = np.vectorize(dcf_model.string_float)
+            pre_x = vfunc(pre_x)
+
+            if x_ind == "Date":
+                pre_x = pre_x - np.min(pre_x)
+            x = pre_x.reshape((-1, 1))
+            pre_y = y_df.loc[y_ind].to_numpy()
+            y = vfunc(pre_y)
+            model = LinearRegression().fit(x, y)
+            r_sq = model.score(x, y)
+            r = abs(r_sq**0.5)
+
+            if r > 0.9:
+                strength = "very strong"
+            elif r > 0.7:
+                strength = "strong"
+            elif r > 0.5:
+                strength = "moderate"
+            elif r > 0.3:
+                strength = "weak"
+            else:
+                strength = "very weak"
+            analy_message = (
                 f"The correlation between {x_ind.lower()} and {y_ind.lower()}"
                 f" is {strength} with a correlation coefficient of {r:.4f}."
-            ),
-        )
+            )
+            dcf_model.set_cell(
+                self.ws[1], f"{dcf_static.letters[col]}{row1}", float(model.coef_)
+            )
+            dcf_model.set_cell(
+                self.ws[1],
+                f"{dcf_static.letters[col+1]}{row1}",
+                float(model.intercept_),
+            )
+            dcf_model.set_cell(
+                self.ws[1],
+                f"{dcf_static.letters[col+2]}{row1}",
+                dcf_static.letters[self.letter],
+                font=dcf_static.red,
+            )
+            dcf_model.set_cell(
+                self.ws[3],
+                f"A{self.letter+4}",
+                dcf_static.letters[self.letter],
+                font=dcf_static.red,
+            )
+        elif pred_type == "growth":
+            pre_y = y_df.loc[y_ind].to_numpy()
+            fin_y = []
+            for item in pre_y:
+                try:
+                    fin_y.append(float(item))
+                except TypeError:
+                    fin_y.append(0)
+            overall_growth = (fin_y[-1] - fin_y[0]) / fin_y[0]
+            yearly_growth = overall_growth / len(fin_y)
+            analy_message = (
+                f"Assuming growth percentage of {(yearly_growth * 100):.2f}%"
+            )
+            dcf_model.set_cell(
+                self.ws[1], f"{dcf_static.letters[col]}{row1}", yearly_growth
+            )
+            dcf_model.set_cell(
+                self.ws[1],
+                f"{dcf_static.letters[col+2]}{row1}",
+                dcf_static.letters[self.letter],
+                font=dcf_static.red,
+            )
+
+        dcf_model.set_cell(self.ws[3], f"B{self.letter+4}", analy_message)
 
         col = self.info["len_data"] + 1
         for i in range(self.info["len_pred"]):
-            if x_ind == "Date":
+            if pred_type == "growth":
+                row_n = (
+                    y_df.index.get_loc(y_ind) + 1 + self.starts["IS"]
+                    if y_type == "IS"
+                    else self.starts["BS"]
+                )
                 base = (
-                    f"(({dcf_static.letters[col+i]}4-B4)*{dcf_static.letters[col+self.info['len_pred']+2]}"
+                    f"({dcf_static.letters[col+i-1]}{row1}* (1+"
+                    f"{dcf_static.letters[col+self.info['len_pred']+2]}{row1}))"
+                )
+
+            elif x_ind == "Date":
+                base = (
+                    f"(({dcf_static.letters[col+i]}4-B4)*"
+                    f"{dcf_static.letters[col+self.info['len_pred']+2]}"
                     f"{row1})+{dcf_static.letters[col+self.info['len_pred']+3]}{row1}"
                 )
             else:
@@ -843,7 +944,8 @@ class CreateExcelFA:
                     else self.starts["BS"]
                 )
                 base = (
-                    f"({dcf_static.letters[col+i]}{row_n}*{dcf_static.letters[col+self.info['len_pred']+2]}{row1})"
+                    f"({dcf_static.letters[col+i]}{row_n}*"
+                    f"{dcf_static.letters[col+self.info['len_pred']+2]}{row1})"
                     f"+{dcf_static.letters[col+self.info['len_pred']+3]}{row1}"
                 )
             dcf_model.set_cell(
@@ -863,7 +965,7 @@ class CreateExcelFA:
         adds: List[str],
         subtracts: List[str],
         audit: bool = False,
-        text: str = None,
+        text: Optional[str] = None,
     ):
         col = 1 if audit else self.info["len_data"] + 1
         for i in range(self.info["len_data"] if audit else self.info["len_pred"]):
@@ -882,14 +984,11 @@ class CreateExcelFA:
         if text:
             self.custom_exp(row, text)
 
-    @log_start_end(log=logger)
     def title_to_row(self, title: str) -> int:
         df = (
             self.df["IS"]
             if title in self.df["IS"].index
-            else self.df["BS"]
-            if title in self.df["BS"].index
-            else self.df["CF"]
+            else self.df["BS"] if title in self.df["BS"].index else self.df["CF"]
         )
         ind = (
             df.index.get_loc(title)
@@ -897,16 +996,18 @@ class CreateExcelFA:
             + (
                 self.starts["IS"]
                 if title in self.df["IS"].index
-                else self.starts["BS"]
-                if title in self.df["BS"].index
-                else self.starts["CF"]
+                else (
+                    self.starts["BS"]
+                    if title in self.df["BS"].index
+                    else self.starts["CF"]
+                )
             )
         )
         return ind
 
     @log_start_end(log=logger)
     def custom_exp(
-        self, row: Union[int, str], text: str, ws: int = 1, column: str = None
+        self, row: Union[int, str], text: str, ws: int = 1, column: Optional[str] = None
     ):
         if ws == 1:
             rowT = row if isinstance(row, int) else self.title_to_row(row)
@@ -942,13 +1043,13 @@ class CreateExcelFA:
         dcf_model.set_cell(self.ws[4], "B4", "Sector:")
         dcf_model.set_cell(self.ws[4], "C4", self.data["info"]["sector"])
         similar_data = dcf_model.get_similar_dfs(
-            self.info["ticker"],
+            self.info["symbol"],
             self.data["info"],
             self.info["max_similars"],
             self.info["no_filter"],
         )
         similar_data.insert(
-            0, [self.info["ticker"], [self.df["BS"], self.df["IS"], self.df["CF"]]]
+            0, [self.info["symbol"], [self.df["BS"], self.df["IS"], self.df["CF"]]]
         )
         row = 6
         for val in similar_data:
@@ -1023,8 +1124,8 @@ class CreateExcelFA:
                 pdiv1 = dcf_model.get_value(val[1][1], "Preferred Dividends", j)[1]
                 opcf1 = dcf_model.get_value(val[1][2], "Operating Cash Flow", j)[1]
 
-                info, outstand = self.data["info"], float(
-                    self.data["info"]["sharesOutstanding"]
+                info, outstand = self.data["f_info"], float(
+                    self.data["f_info"]["shares"]
                 )
 
                 # Enter row offset, number to display, and format number
@@ -1040,11 +1141,13 @@ class CreateExcelFA:
                     [11, dcf_model.frac(ap1, cogs1 / 365), 0],
                     [
                         12,
-                        "N/A"
-                        if sls1 == 0 or cogs1 == 0
-                        else dcf_model.frac(ar1, sls1 / 365)
-                        + dcf_model.frac(inv1, cogs1 / 365)
-                        - dcf_model.frac(ap1, cogs1 / 365),
+                        (
+                            "N/A"
+                            if sls1 == 0 or cogs1 == 0
+                            else dcf_model.frac(ar1, sls1 / 365)
+                            + dcf_model.frac(inv1, cogs1 / 365)
+                            - dcf_model.frac(ap1, cogs1 / 365)
+                        ),
                         0,
                     ],
                     [13, dcf_model.frac(sls1, (ta0 + ta1) / 2), 0],
@@ -1066,7 +1169,7 @@ class CreateExcelFA:
                     [
                         31,
                         dcf_model.frac(
-                            float(info["previousClose"]) * outstand,
+                            float(info["regular_market_previous_close"]) * outstand,
                             (ni1 - pdiv1) * self.info["rounding"],
                         ),
                         0,

@@ -1,146 +1,140 @@
-# Hugo Server
+# OpenBB Documentation Website
 
-The current features can be found in [OpenBB Terminal Features](https://openbb-finance.github.io/OpenBBTerminal).
+This repository contains the source code for the OpenBB Documentation Website.
 
-<!-- TABLE OF CONTENTS -->
-<summary><h2 style="display: inline-block">Table of Contents</h2></summary>
-<ol>
-  <li><a href="#install-hugo">Install Hugo</a></li>
-  <li><a href="#run-locally">Run Locally</a></li>
-  <li><a href="#adding-features">Adding Features</a></li>
-  <ul>
-    <li><a href="#structure">Structure</a></li>
-    <li><a href="#new-feature">New Feature</a></li>
-    </ul>
-</ol>
+The website was built using [Docusaurus](https://docusaurus.io/), a modern static website generator and [TailwindCSS](https://tailwindcss.com) as styling solution. It uses algolia search for the search bar.
+The final website can be found at [https://docs.openbb.co](https://docs.openbb.co).
 
-## Install Hugo
+## Folder Structure
 
-Install [Hugo](https://gohugo.io/getting-started/installing/).
-
-## Run Locally
-
-Go into `website` directory with:
-
-```
-cd website
+```bash
+website
+├── content # Markdown files
+| ├── sdk # SDK markdown files
+| ├── bot # bot markdown files
+| ├── platform # platform markdown files
+| └── terminal # Terminal markdown files
+├── src # react stuff for website
+├── static # Static files
+├── generate_sdk_markdown.py # Script to generate markdown files for SDK
+└── generate_terminal_markdown.py # Script to generate markdown files for Terminal
 ```
 
-And run:
+### Markdown files
 
-```
-hugo server -D
-```
+The markdown files are used to generate the website. The markdown files are located in the `content` folder. The markdown files are generated using the `generate_sdk_markdown.py` and `generate_terminal_markdown.py` scripts. The markdown files are generated from the docstrings in the SDK and Terminal code. Files inside `content/sdk/reference` and `content/terminal/reference` should not be changed manually because they are generated automatically on every commit.
 
-If everything is working well, the following should appear:
+### Syntax sugar
 
-```
-13:58 $ hugo server -D
-Start building sites …
-hugo v0.87.0+extended darwin/amd64 BuildDate=unknown
+#### Code blocks
 
-                   | EN
--------------------+------
-  Pages            | 853
-  Paginator pages  |   0
-  Non-page files   |   1
-  Static files     | 111
-  Processed images |   4
-  Aliases          |   0
-  Sitemaps         |   1
-  Cleaned          |   0
+Code blocks are generated using the default markdown syntax:
 
-Built in 14912 ms
-Watching for changes in /Users/DidierRodriguesLopes/Documents/git/OpenBBTerminal/website/{archetypes,assets,content,data,static,themes}
-Watching for config changes in /Users/DidierRodriguesLopes/Documents/git/OpenBBTerminal/website/config.toml
-Environment: "development"
-Serving pages from memory
-Running in Fast Render Mode. For full rebuilds on change: hugo server --disableFastRender
-Web Server is available at http://localhost:1313/ (bind address 127.0.0.1)
-Press Ctrl+C to stop
+  ```python
+  print("Hello World")
+  ```
+
+To generate a dynamic date for a certain code block (useful for options examples that need to have a valid date), you can use `2022-07-29` as a placeholder. The script will replace it with the third friday of the next month.
+
+```txt
+/op oichart ticker:AMD expiry:2022-07-29
 ```
 
-And you should be able to access your local version at http://localhost:1313/.
+#### Available options
 
-This will be important for the addiiton of features to the Hugo Server.
+This is great for huge lists. It opens a popup that contains the list and the search bar, so you can easily find what you are looking for. Everything is virtualized, so it's always fast no matter how many items you have.
+Check [crypto page](https://docs.openbb.co/bot/discord/crypto) for a demo of this component.
 
-## Adding Features
+```md
+import AvailableOptions from "@site/src/components/General/AvailableOptions";
 
-### Structure
-
-This is the structure that the documentation follows:
-
+<AvailableOptions
+label="Exchanges"
+allOptions={[
+"aax",
+"ascendex",
+"bequant",
+"bibox",
+"bigone",
+"binance",
+"binancecoinm",
+"binanceus",
+"binanceusdm",
+"bit2c",
+"bitbank",
+"bitbay",
+"bitcoincom",
+"bitfinex",
+"bitfinex2",
+"bitflyer",
+"bitforex",
+"bitget",
+"bithumb",
+"bitmart",
+"bitmex",
+"bitopro",
+"bitpanda",
+"bitrue",
+"bitso",
+"bitstamp",
+"bitstamp1",
+"bittrex",
+"bitvavo",
+]}
+/>
 ```
-website/content/_index.md
-               /stocks/_index.md
-                      /load/_index.md
-                      /candle/_index.md
-                      /discovery/_index.md
-                                /ipo/_index.md
-                                    /...
-                                /...
-                      /...
-               /cryptocurrency/_index.md
-                              /chart/_index.md
-                              /defi/_index.md
-                                   /borrow/_index.md
-                                   /...
-                              /...
-               /...
-               /common/_index.md
-                      /technical_analysis/_index.md
-                                         /ema/_index.md
-                                         /...
-                      /...
+
+## Run locally
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/en/) >= 16.13.0
+  To check if you have Node.js installed, run this command in your terminal:
+
+```bash
+node --version # should be v16.13.0 or higher
 ```
 
-Note that the `common` folder holds features that are common across contexts, e.g. `technical analysis` can be performed on both `stocks` or `crytpo`.
+### Install dependencies
 
-### New Feature
+```bash
+npm install
+```
 
-To add a new command, there are two main actions that need to be done:
+### Start development server
 
-1. Create a directory with the name of the command and a `_index.md` file within. Examples:
+```bash
+npm start
+```
 
-   - When adding `ipo`, since this command belongs to context `stocks` and category `discovery`, we added a `ipo` folder with a `_index.md` file within to `website/content/stocks/discovery`.
-   - When adding `candle`, since this command belongs to context `stocks`, we added a `candle` folder with a `_index.md` file within to `website/content/stocks/`.
+This command starts a local development server and open up a browser window in `http://localhost:3000`. Most changes are reflected live without having to restart the server.
 
-2. The `_index.md` file should have the output of the `command -h` followed by a screenshot example (with white background) of what the user can expect. Note that you can now drag and drop the images while editing the readme file on the remote web version of your PR branch. Github will create a link for it with format (https://user-images.githubusercontent.com/***/***.file_format).
+### Build
 
-Example:
+```bash
+npm run build
+```
+
+This command generates static content into the `build` directory and can be served using any static contents hosting service. We use Github Pages to host our website. It's deployed in the `gh-pages` branch.
+
+## Run tests
+
+```bash
+pytest tests/website --autodoc
+```
+
+> If tests are run locally, the `--autodoc` flag is required, otherwise tests will be skipped.
+
+> To install necessary dependencies for tests, run `poetry install -E doc` in the root directory of the repository.
+
+## Notes
+
+### iFrame
+
+We are detecting whether the website is loaded inside an iframe. If it is, we are hiding the header and footer. This is done to have a better integration with our [hub website](https://my.openbb.co).
+
+## Contributing
+
+We welcome contributions to the OpenBB Documentation Website.
 
 ---
-
-```shell
-usage: ipo [-p PAST_DAYS] [-f FUTURE_DAYS]
-```
-
-Past and future IPOs. [Source: https://finnhub.io]
-
-- -p : Number of past days to look for IPOs. Default 0.
-- -f : Number of future days to look for IPOs. Default 10.
-
-<IMAGE HERE - Use drag and drop hint mentioned above>
-
----
-
-3. Update the Navigation bar to match the content you've added. This is done by adding 2 lines of code to `website/data/menu/`, i.e. a `name` and a `ref`. Example:
-
-```
----
-main:
-  - name: stocks
-    ref: "/stocks"
-    sub:
-      - name: load
-        ref: "/stocks/load"
-      - name: candle
-        ref: "/stocks/candle"
-      - name: discovery
-        ref: "/stocks/discovery"
-        sub:
-          - name: ipo
-            ref: "/stocks/discovery/ipo"
-          - name: map
-            ref: "/stocks/discovery/map"
-```

@@ -1,44 +1,21 @@
 """Helper classes."""
+
 __docformat__ = "numpy"
-import os
 import argparse
+import io
 import json
+import os
 from importlib import machinery, util
-from typing import Union, List, Dict, Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Union
 
-import matplotlib
 import matplotlib.pyplot as plt
+import plotly.express as px
 from matplotlib import font_manager, ticker
+from PIL import Image
 
-
-class LineAnnotateDrawer:
-    """Line drawing class."""
-
-    def __init__(self, ax: matplotlib.axes = None):
-        self.ax = ax
-
-    def draw_lines_and_annotate(self):
-        """Draw lines."""
-        print("Click twice for annotation.\nClose window to keep using terminal.\n")
-
-        while True:
-            xy = plt.ginput(2)
-            # Check whether the user has closed the window or not
-            if not plt.get_fignums():
-                print("")
-                return
-
-            if len(xy) == 2:
-                x = [p[0] for p in xy]
-                y = [p[1] for p in xy]
-
-                if (x[0] == x[1]) and (y[0] == y[1]):
-                    txt = input("Annotation: ")
-                    self.ax.annotate(txt, (x[0], y[1]), ha="center", va="center")
-                else:
-                    self.ax.plot(x, y)
-
-                self.ax.figure.canvas.draw()
+from openbb_terminal.core.config.paths import MISCELLANEOUS_DIRECTORY
+from openbb_terminal.core.session.current_user import get_current_user
 
 
 # pylint: disable=too-few-public-methods
@@ -91,11 +68,8 @@ class TerminalStyle:
     styles as python dictionaries.
     """
 
-    _STYLES_FOLDER = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "styles")
-    )
-    DEFAULT_STYLES_LOCATION = os.path.join(_STYLES_FOLDER, "default")
-    USER_STYLES_LOCATION = os.path.join(_STYLES_FOLDER, "user")
+    DEFAULT_STYLES_LOCATION = MISCELLANEOUS_DIRECTORY / "styles" / "default"
+    USER_STYLES_LOCATION = get_current_user().preferences.USER_DATA_DIRECTORY / "styles"
 
     mpl_styles_available: Dict[str, str] = {}
     mpl_style: str = ""
@@ -142,6 +116,8 @@ class TerminalStyle:
         console_style : str, optional
             Style name without extension, by default ""
         """
+        # To import all styles from terminal repo folder to user data
+
         for folder in [self.DEFAULT_STYLES_LOCATION, self.USER_STYLES_LOCATION]:
             self.load_available_styles_from_folder(folder)
             self.load_custom_fonts_from_folder(folder)
@@ -149,7 +125,7 @@ class TerminalStyle:
         if mpl_style in self.mpl_styles_available:
             self.mpl_style = self.mpl_styles_available[mpl_style]
         else:
-            self.mpl_style = self.mpl_styles_available["dark"]
+            self.mpl_style = self.mpl_styles_available.get("dark", "")
 
         if mpl_style in self.mpl_rcparams_available:
             with open(self.mpl_rcparams_available[mpl_style]) as stylesheet:
@@ -167,7 +143,10 @@ class TerminalStyle:
                 self.mpf_style = json.load(stylesheet)
             self.mpf_style["base_mpl_style"] = self.mpl_style
 
-        if console_style in self.console_styles_available:
+        if "openbb_config" in self.console_styles_available:
+            with open(self.console_styles_available["openbb_config"]) as stylesheet:
+                self.console_style = json.load(stylesheet)
+        elif console_style in self.console_styles_available:
             with open(self.console_styles_available[console_style]) as stylesheet:
                 self.console_style = json.load(stylesheet)
         else:
@@ -176,7 +155,7 @@ class TerminalStyle:
 
         self.applyMPLstyle()
 
-    def load_custom_fonts_from_folder(self, folder: str) -> None:
+    def load_custom_fonts_from_folder(self, folder: Path) -> None:
         """Load custom fonts form folder.
 
         TTF and OTF fonts are loaded into the mpl font manager and are available for
@@ -187,12 +166,19 @@ class TerminalStyle:
         folder : str
             Path to the folder containing the fonts
         """
-        for font_file in os.listdir(folder):
-            if font_file.endswith(".otf") or font_file.endswith(".ttf"):
+
+        if not folder.exists():
+            return
+
+        for font_file in folder.iterdir():
+            if not font_file.is_file():
+                continue
+
+            if font_file.name.endswith(".otf") or font_file.name.endswith(".ttf"):
                 font_path = os.path.abspath(os.path.join(folder, font_file))
                 font_manager.fontManager.addfont(font_path)
 
-    def load_available_styles_from_folder(self, folder: str) -> None:
+    def load_available_styles_from_folder(self, folder: Path) -> None:
         """Load custom styles from folder.
 
         Parses the styles/default and styles/user folders and loads style files.
@@ -207,22 +193,29 @@ class TerminalStyle:
         folder : str
             Path to the folder containing the stylesheets
         """
-        for stf in os.listdir(folder):
-            if stf.endswith(".mplstyle"):
-                self.mpl_styles_available[stf.replace(".mplstyle", "")] = os.path.join(
-                    folder, stf
+
+        if not folder.exists():
+            return
+
+        for stf in folder.iterdir():
+            if not stf.is_file():
+                continue
+
+            if stf.name.endswith(".mplstyle"):
+                self.mpl_styles_available[stf.name.replace(".mplstyle", "")] = (
+                    os.path.join(folder, stf)
                 )
-            elif stf.endswith(".mplrc.json"):
-                self.mpl_rcparams_available[
-                    stf.replace(".mplrc.json", "")
-                ] = os.path.join(folder, stf)
-            elif stf.endswith(".mpfstyle.json"):
-                self.mpf_styles_available[
-                    stf.replace(".mpfstyle.json", "")
-                ] = os.path.join(folder, stf)
-            elif stf.endswith(".richstyle.json"):
+            elif stf.name.endswith(".mplrc.json"):
+                self.mpl_rcparams_available[stf.name.replace(".mplrc.json", "")] = (
+                    os.path.join(folder, stf)
+                )
+            elif stf.name.endswith(".mpfstyle.json"):
+                self.mpf_styles_available[stf.name.replace(".mpfstyle.json", "")] = (
+                    os.path.join(folder, stf)
+                )
+            elif stf.name.endswith(".richstyle.json"):
                 self.console_styles_available[
-                    stf.replace(".richstyle.json", "")
+                    stf.name.replace(".richstyle.json", "")
                 ] = os.path.join(folder, stf)
 
     def applyMPLstyle(self):
@@ -236,7 +229,10 @@ class TerminalStyle:
         self.down_color = self.mpf_style["marketcolors"]["volume"]["down"]
         self.up_color = self.mpf_style["marketcolors"]["volume"]["up"]
         self.line_width = plt.rcParams["lines.linewidth"]
-        self.volume_bar_width = self.mpl_rcparams["volume_bar_width"]
+        try:
+            self.volume_bar_width = self.mpl_rcparams["volume_bar_width"]
+        except Exception():
+            pass
 
     def get_colors(self, reverse: bool = False) -> List:
         """Get hex color sequence from the stylesheet."""
@@ -268,9 +264,9 @@ class TerminalStyle:
         ):
             ax.xaxis.set_major_formatter(
                 ticker.FuncFormatter(
-                    lambda value, _: tick_labels[int(value)]
-                    if int(value) in data_index
-                    else ""
+                    lambda value, _: (
+                        tick_labels[int(value)] if int(value) in data_index else ""
+                    )
                 )
             )
             ax.xaxis.set_major_locator(ticker.MaxNLocator(6, integer=True))
@@ -352,21 +348,35 @@ class TerminalStyle:
             )
 
     # pylint: disable=import-outside-toplevel
-    def visualize_output(self, force_tight_layout: bool = True):
+    def visualize_output(
+        self, force_tight_layout: bool = True, external_axes: bool = False
+    ):
         """Show chart in an interactive widget."""
-        import openbb_terminal.feature_flags as obbff
-        from openbb_terminal.rich_config import console
 
-        if obbff.USE_CMD_LOCATION_FIGURE:
-            self.add_cmd_source(plt.gcf())
-        if obbff.USE_WATERMARK:
-            self.add_label(plt.gcf())
+        self.add_cmd_source(plt.gcf())
+        self.add_label(plt.gcf())
+
         if force_tight_layout:
             plt.tight_layout(pad=self.tight_layout_padding)
-        if obbff.USE_ION:
-            plt.ion()
-        plt.show()
-        console.print()
+
+        if external_axes:
+            img_buf = io.BytesIO()
+            plt.savefig(img_buf, format="jpg")
+            im = Image.open(img_buf)
+            fig = px.imshow(im)
+            plt.close()
+            fig.update_layout(
+                xaxis=dict(visible=False, showticklabels=False),
+                yaxis=dict(visible=False, showticklabels=False),
+                margin=dict(l=0, r=0, t=0, b=0),
+                autosize=False,
+                width=im.width,
+                height=im.height,
+            )
+        else:
+            fig = None
+            plt.show()
+        return fig
 
 
 class AllowArgsWithWhiteSpace(argparse.Action):

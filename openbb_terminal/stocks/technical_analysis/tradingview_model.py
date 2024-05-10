@@ -1,14 +1,15 @@
 """Tradingview model"""
+
 __docformat__ = "numpy"
 
 import logging
 
 import pandas as pd
-import requests
 from tradingview_ta import TA_Handler
 
-from openbb_terminal import config_terminal as cfg
+from openbb_terminal.core.session.current_user import get_current_user
 from openbb_terminal.decorators import log_start_end
+from openbb_terminal.helper_funcs import request
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +24,45 @@ INTERVALS = {
     "1M": "1 month",
 }
 
-SCREENERS = ["crypto", "forex", "cfd"]
+SCREENERS = [
+    "australia",
+    "brazil",
+    "cfd",
+    "crypto",
+    "euronext",
+    "forex",
+    "france",
+    "germany",
+    "hongkong",
+    "india",
+    "indonesia",
+    "malaysia",
+    "philippines",
+    "russia",
+    "ksa",
+    "rsa",
+    "korea",
+    "spain",
+    "sweden",
+    "taiwan",
+    "thailand",
+    "turkey",
+    "uk",
+    "america",
+    "vietnam",
+]
 
 
 @log_start_end(log=logger)
 def get_tradingview_recommendation(
-    ticker: str, screener: str, exchange: str, interval: str
+    symbol: str, screener: str = "america", exchange: str = "", interval: str = ""
 ) -> pd.DataFrame:
     """Get tradingview recommendation based on technical indicators
 
     Parameters
     ----------
-    ticker : str
-        Ticker to get the recommendation from tradingview based on technical indicators
+    symbol : str
+        Ticker symbol to get the recommendation from tradingview based on technical indicators
     screener : str
         Screener based on tradingview docs https://python-tradingview-ta.readthedocs.io/en/latest/usage.html
     exchange: str
@@ -50,31 +77,41 @@ def get_tradingview_recommendation(
     """
 
     if not exchange:
-        s_req = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={ticker}&apikey={cfg.API_KEY_ALPHAVANTAGE}"
-        result = requests.get(s_req, stream=True)
-        exchange = result.json()["Exchange"]
+        current_user = get_current_user()
+        s_req = (
+            f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={symbol}&"
+            f"apikey={current_user.credentials.API_KEY_ALPHAVANTAGE}"
+        )
+        result = request(s_req, stream=True)
+        data = result.json()
+        if not data:
+            return pd.DataFrame()
+        exchange = data["Exchange"]
 
-    if interval:
-        intervals = [interval]
-    else:
-        intervals = ["1M", "1W", "1d", "4h", "1h", "15m", "5m", "1m"]
+    intervals = (
+        [interval] if interval else ["1M", "1W", "1d", "4h", "1h", "15m", "5m", "1m"]
+    )
 
     df_recommendation = pd.DataFrame()
     index_recommendation = []
     for an_interval in intervals:
-        # If the returned data was successful
-        if result.status_code == 200:
+        if exchange:
             stock_recommendation = TA_Handler(
-                symbol=ticker,
+                symbol=symbol,
                 screener=screener,
                 exchange=exchange,
                 interval=an_interval,
             )
             d_recommendation = stock_recommendation.get_analysis().summary
-            df_recommendation = df_recommendation.append(
-                d_recommendation, ignore_index=True
+            df_recommendation = pd.concat(
+                [
+                    pd.DataFrame.from_dict(d_recommendation, orient="index").T,
+                    df_recommendation,
+                ],
+                axis=0,
             )
             index_recommendation.append(INTERVALS[an_interval])
+
         df_recommendation.index = index_recommendation
         df_recommendation[["BUY", "NEUTRAL", "SELL"]] = df_recommendation[
             ["BUY", "NEUTRAL", "SELL"]

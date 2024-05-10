@@ -1,7 +1,9 @@
 """CoinPaprika helpers"""
+
 __docformat__ = "numpy"
 
 from typing import Any, Optional
+
 import requests
 from requests.adapters import HTTPAdapter
 
@@ -50,7 +52,7 @@ class PaprikaSession:
         kwargs:
             additional parameters that will be added to payload
         Returns
-        -------
+        ----------
         dict with response data
         """
 

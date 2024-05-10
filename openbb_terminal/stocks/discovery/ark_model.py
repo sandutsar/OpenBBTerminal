@@ -1,4 +1,5 @@
 """ ARK Model """
+
 __docformat__ = "numpy"
 
 import json
@@ -7,31 +8,43 @@ from datetime import timedelta
 
 import numpy as np
 import pandas as pd
-import requests
 import yfinance as yf
 from bs4 import BeautifulSoup
 from pandas.core.frame import DataFrame
 
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_funcs import get_user_agent
+from openbb_terminal.helper_funcs import get_user_agent, request
 from openbb_terminal.rich_config import console
 
 logger = logging.getLogger(__name__)
 
 
 @log_start_end(log=logger)
-def get_ark_orders() -> DataFrame:
+def get_ark_orders(
+    buys_only: bool = False,
+    sells_only: bool = False,
+    fund: str = "",
+) -> DataFrame:
     """Returns ARK orders in a Dataframe
+
+    Parameters
+    ----------
+    buys_only: bool
+        Flag to filter on buys only
+    sells_only: bool
+        Flag to sort on sells only
+    fund: str
+        Optional filter by fund
 
     Returns
     -------
     DataFrame
-        ARK orders data frame with the following columns:
-        ticker, date, shares, weight, fund, direction
+        ARK orders data frame with the following columns -
+        (ticker, date, shares, weight, fund, direction)
     """
     url_orders = "https://cathiesark.com/ark-funds-combined/trades"
 
-    raw_page = requests.get(url_orders, headers={"User-Agent": get_user_agent()}).text
+    raw_page = request(url_orders, headers={"User-Agent": get_user_agent()}).text
 
     parsed_script = BeautifulSoup(raw_page, "lxml").find(
         "script", {"id": "__NEXT_DATA__"}
@@ -72,57 +85,65 @@ def get_ark_orders() -> DataFrame:
 
     df_orders["date"] = pd.to_datetime(df_orders["date"], format="%Y-%m-%d").dt.date
 
+    if df_orders.empty:
+        console.print("The ARK orders aren't available at the moment.\n")
+        return pd.DataFrame()
+    if fund:
+        df_orders = df_orders[df_orders.fund == fund]
+    if buys_only:
+        df_orders = df_orders[df_orders.direction == "Buy"]
+    if sells_only:
+        df_orders = df_orders[df_orders.direction == "Sell"]
+
     return df_orders
 
 
 @log_start_end(log=logger)
-def add_order_total(df_orders: DataFrame) -> DataFrame:
+def add_order_total(data: DataFrame) -> DataFrame:
     """Takes an ARK orders dataframe and pulls data from Yahoo Finance to add
     volume, open, close, high, low, and total columns
 
     Parameters
     ----------
-    df_orders : DataFrame
-        ARK orders data frame with the following columns:
-        ticker, date, shares, weight, fund, direction
+    data: DataFrame
+        ARK orders data frame with the following columns -
+        (ticker, date, shares, weight, fund, direction)
 
     Returns
     -------
     DataFrame
-        ARK orders data frame with the following columns:
-        ticker, date, shares, volume, open, close, high, low, total, weight, fund, direction
+        ARK orders data frame with the following columns -
+        (ticker, date, shares, volume, open, close, high, low, total, weight, fund, direction)
     """
-    start_date = df_orders["date"].iloc[-1] - timedelta(days=1)
+    start_date = data["date"].iloc[-1] - timedelta(days=1)
 
-    tickers = " ".join(df_orders["ticker"].unique())
-
-    console.print("")
+    tickers = " ".join(data["ticker"].unique())
 
     prices = yf.download(tickers, start=start_date, progress=False)
 
+    if prices.empty:
+        return pd.DataFrame()
     for i, candle in enumerate(["Volume", "Open", "Close", "High", "Low", "Total"]):
-        df_orders.insert(i + 3, candle.lower(), 0)
+        data.insert(i + 3, candle.lower(), 0)
 
     pd.options.mode.chained_assignment = None
-    for i, _ in df_orders.iterrows():
+    for i, _ in data.iterrows():
         if np.isnan(
-            prices["Open"][df_orders.loc[i, "ticker"]][
-                df_orders.loc[i, "date"].strftime("%Y-%m-%d")
+            prices["Open"][data.loc[i, "ticker"]][
+                data.loc[i, "date"].strftime("%Y-%m-%d")
             ]
         ):
             for candle in ["Volume", "Open", "Close", "High", "Low", "Total"]:
-                df_orders.loc[i, candle.lower()] = 0
+                data.loc[i, candle.lower()] = 0
             continue
 
         for candle in ["Volume", "Open", "Close", "High", "Low"]:
-            df_orders.loc[i, candle.lower()] = prices[candle][
-                df_orders.loc[i, "ticker"]
-            ][df_orders.loc[i, "date"].strftime("%Y-%m-%d")]
+            data.loc[i, candle.lower()] = prices[candle][data.loc[i, "ticker"]][
+                data.loc[i, "date"].strftime("%Y-%m-%d")
+            ]
 
-        df_orders.loc[i, "total"] = (
-            df_orders.loc[i, "close"] * df_orders.loc[i, "shares"]
-        )
+        data.loc[i, "total"] = data.loc[i, "close"] * data.loc[i, "shares"]
 
     pd.options.mode.chained_assignment = "warn"
 
-    return df_orders
+    return data

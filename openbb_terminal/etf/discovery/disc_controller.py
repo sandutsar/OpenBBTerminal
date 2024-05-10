@@ -1,23 +1,19 @@
 """Discovery Controller Module"""
+
 __docformat__ = "numpy"
 
 import argparse
 import logging
-from typing import List
+from typing import List, Optional
 
-from prompt_toolkit.completion import NestedCompleter
-
-from openbb_terminal import feature_flags as obbff
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.custom_prompt_toolkit import NestedCompleter
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.etf.discovery import wsj_view
-from openbb_terminal.helper_funcs import (
-    EXPORT_ONLY_RAW_DATA_ALLOWED,
-    check_positive,
-    parse_known_args_and_warn,
-)
+from openbb_terminal.helper_funcs import EXPORT_ONLY_RAW_DATA_ALLOWED
 from openbb_terminal.menu import session
 from openbb_terminal.parent_classes import BaseController
-from openbb_terminal.rich_config import console
+from openbb_terminal.rich_config import MenuText, console
 
 logger = logging.getLogger(__name__)
 
@@ -31,24 +27,24 @@ class DiscoveryController(BaseController):
         "active",
     ]
     PATH = "/etf/disc/"
+    CHOICES_GENERATION = True
 
-    def __init__(self, queue: List[str] = None):
+    def __init__(self, queue: Optional[List[str]] = None):
         """Constructor"""
         super().__init__(queue)
 
-        if session and obbff.USE_PROMPT_TOOLKIT:
-            choices: dict = {c: {} for c in self.controller_choices}
+        if session and get_current_user().preferences.USE_PROMPT_TOOLKIT:
+            choices: dict = self.choices_default
+
             self.completer = NestedCompleter.from_nested_dict(choices)
 
     def print_help(self):
         """Print help"""
-        help_text = """
-[src][Wall Street Journal][/src][cmds]
-    gainers     top gainers
-    decliners   top decliners
-    active      most active[/cmds]
-"""
-        console.print(text=help_text, menu="ETF - Discovery")
+        mt = MenuText("etf/disc/", 60)
+        mt.add_cmd("gainers")
+        mt.add_cmd("decliners")
+        mt.add_cmd("active")
+        console.print(text=mt.menu_text, menu="ETF - Discovery")
 
     @log_start_end(log=logger)
     def call_gainers(self, other_args):
@@ -58,21 +54,20 @@ class DiscoveryController(BaseController):
             description="Displays top ETF/Mutual fund gainers from wsj.com/market-data",
             add_help=False,
         )
-        parser.add_argument(
-            "-l",
-            "--limit",
-            help="Limit of ETFs to display",
-            type=check_positive,
-            default=10,
-            dest="limit",
-        )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
-            parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
+        ns_parser = self.parse_known_args_and_warn(
+            parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED, limit=10
         )
         if ns_parser:
-            wsj_view.show_top_mover("gainers", ns_parser.limit, ns_parser.export)
+            wsj_view.show_top_mover(
+                "gainers",
+                ns_parser.limit,
+                ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
+            )
 
     @log_start_end(log=logger)
     def call_decliners(self, other_args):
@@ -82,21 +77,23 @@ class DiscoveryController(BaseController):
             description="Displays top ETF/Mutual fund decliners from wsj.com/market-data",
             add_help=False,
         )
-        parser.add_argument(
-            "-l",
-            "--limit",
-            help="Limit of ETFs to display",
-            type=check_positive,
-            default=10,
-            dest="limit",
-        )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
-            parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
+        ns_parser = self.parse_known_args_and_warn(
+            parser,
+            other_args,
+            export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED,
+            limit=10,
         )
         if ns_parser:
-            wsj_view.show_top_mover("decliners", ns_parser.limit, ns_parser.export)
+            wsj_view.show_top_mover(
+                "decliners",
+                ns_parser.limit,
+                ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
+            )
 
     @log_start_end(log=logger)
     def call_active(self, other_args):
@@ -106,18 +103,20 @@ class DiscoveryController(BaseController):
             description="Displays most active ETF/Mutual funds from wsj.com/market-data",
             add_help=False,
         )
-        parser.add_argument(
-            "-l",
-            "--limit",
-            help="Limit of ETFs to display",
-            type=check_positive,
-            default=10,
-            dest="limit",
-        )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
-            parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
+        ns_parser = self.parse_known_args_and_warn(
+            parser,
+            other_args,
+            export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED,
+            limit=10,
         )
         if ns_parser:
-            wsj_view.show_top_mover("active", ns_parser.limit, ns_parser.export)
+            wsj_view.show_top_mover(
+                "active",
+                ns_parser.limit,
+                ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
+            )

@@ -1,181 +1,517 @@
 """Portfolio Model"""
+
 __docformat__ = "numpy"
 
-import os
-from datetime import timedelta, datetime
-from typing import Dict, List, Union
 import logging
+from typing import Tuple, Union
 
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
-from statsmodels.regression.rolling import RollingOLS
-import yfinance as yf
-from pycoingecko import CoinGeckoAPI
+import scipy
+from sklearn.metrics import r2_score
 
-from openbb_terminal.portfolio import (
-    portfolio_helper,
-)
-from openbb_terminal.rich_config import console
+from openbb_terminal.common.quantitative_analysis import qa_model
 from openbb_terminal.decorators import log_start_end
+from openbb_terminal.portfolio import metrics_model, portfolio_helper
+from openbb_terminal.portfolio.portfolio_engine import PortfolioEngine
+from openbb_terminal.portfolio.statics import PERIODS
 
-# pylint: disable=E1136,W0201,R0902
-# pylint: disable=unsupported-assignment-operation
+# pylint: disable=E1136,W0201,R0902,C0302, consider-using-f-string, consider-iterating-dictionary
+# pylint: disable=unsupported-assignment-operation,redefined-outer-name,too-many-public-methods
+
 logger = logging.getLogger(__name__)
-cg = CoinGeckoAPI()
+
+pd.options.mode.chained_assignment = None
 
 
 @log_start_end(log=logger)
-def save_df(df: pd.DataFrame, name: str) -> None:
-    """Saves the portfolio as a csv
+def generate_portfolio(
+    transactions_file_path: str,
+    benchmark_symbol: str = "SPY",
+    full_shares: bool = False,
+    risk_free_rate: float = 0,
+) -> PortfolioEngine:
+    """Get PortfolioEngine object
 
     Parameters
     ----------
-    df : pd.DataFrame
-        The dataframe to be saved
-    name : str
-        The name of the string
+    transactions_file_path : str
+        Path to transactions file
+    benchmark_symbol : str
+        Benchmark ticker to download data
+    full_shares : bool
+        Whether to mimic the portfolio trades exactly (partial shares) or round down the
+        quantity to the nearest number
+    risk_free_rate : float
+        Risk free rate in float format
+
+    Returns
+    -------
+    PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
     """
-    path = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.abspath(os.path.join(path, "portfolios", name))
-    if ".csv" in name:
-        df.to_csv(path, index=False)
-    elif ".json" in name:
-        df.to_json(path, index=False)
-    elif ".xlsx" in name:
-        df.to_excel(path, index=False, engine="openpyxl")
+
+    transactions = PortfolioEngine.read_transactions(transactions_file_path)
+    portfolio_engine = PortfolioEngine(transactions)
+    portfolio_engine.generate_portfolio_data()
+    portfolio_engine.set_risk_free_rate(risk_free_rate)
+    portfolio_engine.set_benchmark(symbol=benchmark_symbol, full_shares=full_shares)
+
+    return portfolio_engine
 
 
 @log_start_end(log=logger)
-def get_rolling_beta(
-    df: pd.DataFrame, hist: pd.DataFrame, mark: pd.DataFrame, n: pd.DataFrame
+def get_transactions(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get portfolio transactions
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        Portfolio transactions
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.show(p)
+    """
+
+    return portfolio_engine.get_transactions()
+
+
+@log_start_end(log=logger)
+def set_benchmark(
+    portfolio_engine: PortfolioEngine, symbol: str, full_shares: bool = False
+) -> bool:
+    """Load benchmark into portfolio
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    symbol: str
+        Benchmark symbol to download data
+    full_shares: bool
+        Whether to mimic the portfolio trades exactly (partial shares) or round down the
+        quantity to the nearest number
+
+    Returns
+    -------
+    bool
+        True if successful, False otherwise
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.bench(p, symbol="SPY")
+    """
+
+    return portfolio_engine.set_benchmark(symbol=symbol, full_shares=full_shares)
+
+
+@log_start_end(log=logger)
+def set_risk_free_rate(portfolio_engine: PortfolioEngine, risk_free_rate: float):
+    """Set risk-free rate
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    risk_free_rate: float
+        Risk free rate in float format
+    """
+
+    portfolio_engine.set_risk_free_rate(risk_free_rate=risk_free_rate)
+
+
+def get_holdings_value(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get holdings of assets (absolute value)
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of holdings value
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.holdv(p)
+    """
+
+    all_holdings = portfolio_engine.historical_trade_data["End Value"][
+        portfolio_engine.tickers_list
+    ]
+
+    all_holdings["Total Value"] = all_holdings.sum(axis=1)
+    # No need to account for time since this is daily data
+    all_holdings.index = all_holdings.index.date
+
+    return all_holdings
+
+
+def get_holdings_percentage(
+    portfolio_engine: PortfolioEngine,
 ) -> pd.DataFrame:
-    """Turns a holdings portfolio into a rolling beta dataframe
+    """Get holdings of assets (in percentage)
 
     Parameters
     ----------
-    df : pd.DataFrame
-        The dataframe of daily holdings
-    hist : pd.DataFrame
-        A dataframe of historical returns
-    mark : pd.DataFrame
-        The dataframe of market performance
-    n : int
-        The period to get returns for
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
 
     Returns
-    ----------
-    final : pd.DataFrame
-        Dataframe with rolling beta
+    -------
+    pd.DataFrame
+        DataFrame of holdings percentage
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.holdp(p)
     """
-    df = df["Holding"]
-    uniques = df.columns.tolist()
-    res = df.div(df.sum(axis=1), axis=0)
-    res = res.fillna(0)
-    comb = pd.merge(
-        hist["Close"], mark["Market"], how="outer", left_index=True, right_index=True
-    )
-    comb = comb.fillna(method="ffill")
-    for col in hist["Close"].columns:
-        exog = sm.add_constant(comb["Close"])
-        rols = RollingOLS(comb[col], exog, window=252)
-        rres = rols.fit()
-        res[f"beta_{col}"] = rres.params["Close"]
-    final = res.fillna(method="ffill")
-    for uni in uniques:
-        final[f"prod_{uni}"] = final[uni] * final[f"beta_{uni}"]
-    dropped = final[[f"beta_{x}" for x in uniques]].copy()
-    final = final.drop(columns=[f"beta_{x}" for x in uniques] + uniques)
-    final["total"] = final.sum(axis=1)
-    final = final[final.index >= datetime.now() - timedelta(days=n + 1)]
-    comb = pd.merge(final, dropped, how="left", left_index=True, right_index=True)
-    return comb
+
+    all_holdings = portfolio_engine.historical_trade_data["End Value"][
+        portfolio_engine.tickers_list
+    ]
+
+    all_holdings = all_holdings.divide(all_holdings.sum(axis=1), axis=0) * 100
+
+    # order it a bit more in terms of magnitude
+    all_holdings = all_holdings[all_holdings.sum().sort_values(ascending=False).index]
+
+    return all_holdings
 
 
 @log_start_end(log=logger)
-def get_main_text(df: pd.DataFrame) -> str:
-    """Get main performance summary from a dataframe with returns
+def get_yearly_returns(
+    portfolio_engine: PortfolioEngine,
+    window: str = "all",
+) -> pd.DataFrame:
+    """Get yearly returns
 
     Parameters
     ----------
-    df : pd.DataFrame
-        Stock holdings and returns with market returns
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    window : str
+        interval to compare cumulative returns and benchmark
 
     Returns
-    ----------
-    t : str
-        The main summary of performance
+    -------
+    pd.DataFrame
+        DataFrame with yearly returns
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.yret(p)
     """
-    d_debt = np.where(df[("Cash", "Cash")] > 0, 0, 1)
-    bcash = 0 if df[("Cash", "Cash")][0] > 0 else abs(df[("Cash", "Cash")][0])
-    ecash = 0 if df[("Cash", "Cash")][-1] > 0 else abs(df[("Cash", "Cash")][-1])
-    bdte = bcash / (df["holdings"][0] - bcash)
-    edte = ecash / (df["holdings"][-1] - ecash)
-    if sum(d_debt) > 0:
-        t_debt = (
-            f"Beginning debt to equity was {bdte:.2%} and ending debt to equity was"
-            f" {edte:.2%}. Debt adds risk to a portfolio by amplifying the gains and losses when"
-            " equities change in value."
-        )
-        if bdte > 1 or edte > 1:
-            t_debt += " Debt to equity ratios above one represent a significant amount of risk."
-    else:
-        t_debt = (
-            "Margin was not used this year. This reduces this risk of the portfolio."
-        )
-    text = (
-        f"Your portfolio's performance for the period was {df['return'][-1]:.2%}. This was"
-        f" {'greater' if df['return'][-1] > df[('Market', 'Return')][-1] else 'less'} than"
-        f" the market return of {df[('Market', 'Return')][-1]:.2%}. The variance for the"
-        f" portfolio is {np.var(df['return']):.2%}, while the variance for the market was"
-        f" {np.var(df[('Market', 'Return')]):.2%}. {t_debt} The following report details"
-        f" various analytics from the portfolio. Read below to see the moving beta for a"
-        f" stock."
+
+    portfolio_returns = portfolio_helper.filter_df_by_period(
+        portfolio_engine.portfolio_returns, window
     )
-    return text
+    benchmark_returns = portfolio_helper.filter_df_by_period(
+        portfolio_engine.benchmark_returns, window
+    )
+
+    creturns_year_val = list()
+    breturns_year_val = list()
+
+    for year in sorted(set(portfolio_returns.index.year)):
+        creturns_year = portfolio_returns[portfolio_returns.index.year == year]
+        cumulative_returns = 100 * metrics_model.cumulative_returns(creturns_year)
+        creturns_year_val.append(cumulative_returns.values[-1])
+
+        breturns_year = benchmark_returns[benchmark_returns.index.year == year]
+        benchmark_c_returns = 100 * metrics_model.cumulative_returns(breturns_year)
+        breturns_year_val.append(benchmark_c_returns.values[-1])
+
+    df = pd.DataFrame(
+        {
+            "Portfolio": pd.Series(
+                creturns_year_val, index=list(set(portfolio_returns.index.year))
+            ),
+            "Benchmark": pd.Series(
+                breturns_year_val, index=list(set(portfolio_returns.index.year))
+            ),
+            "Difference": pd.Series(
+                np.array(creturns_year_val) - np.array(breturns_year_val),
+                index=list(set(portfolio_returns.index.year)),
+            ),
+        }
+    )
+
+    return df
 
 
 @log_start_end(log=logger)
-def get_beta_text(df: pd.DataFrame) -> str:
-    """Get beta summary for a dataframe
+def get_monthly_returns(
+    portfolio_engine: PortfolioEngine,
+    window: str = "all",
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Get monthly returns
 
     Parameters
     ----------
-    df : pd.DataFrame
-        The beta history of the stock
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    window : str
+        interval to compare cumulative returns and benchmark
 
     Returns
-    ----------
-    t : str
-        The beta history for a ticker
+    -------
+    pd.DataFrame
+        DataFrame with monthly returns
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.mret(p)
     """
-    betas = df[list(filter(lambda score: "beta" in score, list(df.columns)))]
-    high = betas.idxmax(axis=1)
-    low = betas.idxmin(axis=1)
-    text = (
-        "Beta is how strongly a portfolio's movements correlate with the market's movements."
-        " A stock with a high beta is considered to be riskier. The beginning beta for the period"
-        f" was {portfolio_helper.beta_word(df['total'][0])} at {df['total'][0]:.2f}. This went"
-        f" {'up' if df['total'][-1] > df['total'][0] else 'down'} to"
-        f" {portfolio_helper.beta_word(df['total'][-1])} at {df['total'][-1]:.2f} by the end"
-        f" of the period. The ending beta was pulled {'up' if df['total'][-1] > 1 else 'down'} by"
-        f" {portfolio_helper.clean_name(high[-1] if df['total'][-1] > 1 else low[-1])}, which had"
-        f" an ending beta of {df[high[-1]][-1] if df['total'][-1] > 1 else df[low[-1]][-1]:.2f}."
+
+    portfolio_returns = portfolio_helper.filter_df_by_period(
+        portfolio_engine.portfolio_returns, window
     )
-    return text
+    benchmark_returns = portfolio_helper.filter_df_by_period(
+        portfolio_engine.benchmark_returns, window
+    )
 
+    creturns_month_val = list()
+    breturns_month_val = list()
 
-performance_text = (
-    "The Sharpe ratio is a measure of reward to total volatility. A Sharpe ratio above one is"
-    " considered acceptable. The Treynor ratio is a measure of systematic risk to reward."
-    " Alpha is the average return above what CAPM predicts. This measure should be above zero"
-    ". The information ratio is the excess return on systematic risk. An information ratio of"
-    " 0.4 to 0.6 is considered good."
-)
+    for year in sorted(list(set(portfolio_returns.index.year))):
+        creturns_year = portfolio_returns[portfolio_returns.index.year == year]
+        creturns_val = list()
+        for i in range(1, 13):
+            creturns_year_month = creturns_year[creturns_year.index.month == i]
+            creturns_year_month_val = 100 * metrics_model.cumulative_returns(
+                creturns_year_month
+            )
+
+            if creturns_year_month.empty:
+                creturns_val.append(0)
+            else:
+                creturns_val.append(creturns_year_month_val.values[-1])
+        creturns_month_val.append(creturns_val)
+
+        breturns_year = benchmark_returns[benchmark_returns.index.year == year]
+        breturns_val = list()
+        for i in range(1, 13):
+            breturns_year_month = breturns_year[breturns_year.index.month == i]
+            breturns_year_month_val = 100 * metrics_model.cumulative_returns(
+                breturns_year_month
+            )
+
+            if breturns_year_month.empty:
+                breturns_val.append(0)
+            else:
+                breturns_val.append(breturns_year_month_val.values[-1])
+        breturns_month_val.append(breturns_val)
+
+    columns = [
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+    ]
+    monthly_returns = pd.DataFrame(
+        creturns_month_val,
+        index=sorted(list(set(portfolio_returns.index.year))),
+        columns=columns,
+    )
+    bench_monthly_returns = pd.DataFrame(
+        breturns_month_val,
+        index=sorted(list(set(benchmark_returns.index.year))),
+        columns=columns,
+    )
+
+    years = [
+        (year, instrument)
+        for year in monthly_returns.index
+        for instrument in ["Portfolio", "Benchmark", "Alpha"]
+    ]
+    total_monthly_returns = pd.DataFrame(
+        np.nan,
+        columns=monthly_returns.columns,
+        index=pd.MultiIndex.from_tuples(years, names=["Year", "Instrument"]),
+    )
+
+    for year in monthly_returns.index:
+        for instrument in ["Portfolio", "Benchmark", "Alpha"]:
+            if instrument == "Portfolio":
+                total_monthly_returns.loc[
+                    (year, instrument), monthly_returns.columns
+                ] = monthly_returns.loc[year].values
+            elif instrument == "Benchmark":
+                total_monthly_returns.loc[
+                    (year, instrument), monthly_returns.columns
+                ] = bench_monthly_returns.loc[year].values
+            elif instrument == "Alpha":
+                total_monthly_returns.loc[
+                    (year, instrument), monthly_returns.columns
+                ] = (
+                    monthly_returns.loc[year].values
+                    - bench_monthly_returns.loc[year].values
+                )
+
+    return monthly_returns, bench_monthly_returns, total_monthly_returns
 
 
 @log_start_end(log=logger)
-def calculate_drawdown(input_series: pd.Series, is_returns: bool = False) -> pd.Series:
+def get_daily_returns(
+    portfolio_engine: PortfolioEngine,
+    window: str = "all",
+) -> pd.DataFrame:
+    """Get daily returns
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    window : str
+        interval to compare cumulative returns and benchmark
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with daily returns
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.dret(p)
+    """
+
+    portfolio_returns = portfolio_helper.filter_df_by_period(
+        portfolio_engine.portfolio_returns, window
+    )
+    benchmark_returns = portfolio_helper.filter_df_by_period(
+        portfolio_engine.benchmark_returns, window
+    )
+
+    df = portfolio_returns.to_frame()
+    df = df.join(benchmark_returns)
+    df.index = df.index.date
+    df.columns = ["portfolio", "benchmark"]
+
+    return df
+
+
+def join_allocation(
+    portfolio: pd.DataFrame, benchmark: pd.DataFrame, column: str
+) -> pd.DataFrame:
+    """Help method to join portfolio and benchmark allocation by column
+
+    Parameters
+    ----------
+    portfolio: pd.DataFrame
+        Portfolio allocation
+    benchmark: pd.DataFrame
+        Benchmark allocation
+    column: str
+        Column to join DataFrames
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with portfolio and benchmark allocations
+    """
+
+    if portfolio.empty:
+        portfolio = pd.DataFrame(columns=[column, "Portfolio"])
+
+    if benchmark.empty:
+        benchmark = pd.DataFrame(columns=[column, "Benchmark"])
+
+    combined = pd.merge(portfolio, benchmark, on=column, how="left")
+    combined["Difference"] = combined["Portfolio"] - combined["Benchmark"]
+    combined = combined.replace(np.nan, "-")
+    combined = combined.replace(0, "-")
+
+    return combined
+
+
+def get_distribution_returns(
+    portfolio_engine: PortfolioEngine,
+    window: str = "all",
+) -> pd.DataFrame:
+    """Display daily returns
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    window : str
+        interval to compare cumulative returns and benchmark
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of returns distribution
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.distr(p)
+    """
+
+    portfolio_returns = portfolio_helper.filter_df_by_period(
+        portfolio_engine.portfolio_returns, window
+    )
+    benchmark_returns = portfolio_helper.filter_df_by_period(
+        portfolio_engine.benchmark_returns, window
+    )
+
+    df = pd.DataFrame(portfolio_returns).join(pd.DataFrame(benchmark_returns))
+    df.columns.values[0] = "portfolio"
+    df.columns.values[1] = "benchmark"
+
+    return df
+
+
+@log_start_end(log=logger)
+def get_maximum_drawdown(
+    portfolio_engine: PortfolioEngine, is_returns: bool = False
+) -> Tuple[pd.DataFrame, pd.Series]:
     """Calculate the drawdown (MDD) of historical series.  Note that the calculation is done
      on cumulative returns (or prices).  The definition of drawdown is
 
@@ -183,367 +519,1397 @@ def calculate_drawdown(input_series: pd.Series, is_returns: bool = False) -> pd.
 
     Parameters
     ----------
-    input_series: pd.DataFrame
-        Dataframe of input values
+    data: pd.Series
+        Series of input values
     is_returns: bool
         Flag to indicate inputs are returns
 
     Returns
+    -------
+    pd.Series
+        Holdings series
     pd.Series
         Drawdown series
-    -------
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.maxdd(p)
     """
+
+    holdings: pd.Series = portfolio_engine.historical_trade_data["End Value"]["Total"]
     if is_returns:
-        input_series = (1 + input_series).cumprod()
-    rolling_max = input_series.cummax()
-    drawdown = (input_series - rolling_max) / rolling_max
-    return drawdown
+        holdings = (1 + holdings).cumprod()
+
+    rolling_max = holdings.cummax()
+    drawdown = (holdings - rolling_max) / rolling_max
+
+    return holdings, drawdown
 
 
-class Portfolio:
-    """
-    Class for portfolio analysis in GST
+def get_rolling_volatility(
+    portfolio_engine: PortfolioEngine, window: str = "1y"
+) -> pd.DataFrame:
+    """Get rolling volatility
 
-    Attributes
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    window : str
+        Rolling window size to use
+        Possible options: mtd, qtd, ytd, 1d, 5d, 10d, 1m, 3m, 6m, 1y, 3y, 5y, 10y
+
+    Returns
     -------
-    portfolio_value: pd.Series
-        Series containing value at each day
-    returns: pd.Series
-        Series containing daily returns
-    ItemizedReturns: pd.DataFrame
-        Dataframe of Holdings by class
-    portfolio: pd.DataFrame
-        Dataframe containing all relevant holdings data
+    pd.DataFrame
+        Rolling volatility DataFrame
 
-    Methods
-    -------
-    add_trade:
-        Adds a trade to the dataframe of trades
-    generate_holdings_from_trades:
-        Takes a list of trades and converts to holdings on each day
-    get_yahoo_close_prices:
-        Gets close prices or adj close prices from yfinance
-    add_benchmark
-        Adds a benchmark to the class
-
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.rvol(p)
     """
 
-    @log_start_end(log=logger)
-    def __init__(self, trades: pd.DataFrame = pd.DataFrame(), rf=0):
-        """Initialize Portfolio class"""
-        # Allow for empty initialization
-        self.empty = True
-        self.rf = rf
-        if not trades.empty:
-            if "cash" not in trades.Name.to_list():
-                logger.warning(
-                    "No initial cash deposit. Calculations may be off as this assumes trading from a "
-                    "funded account"
-                )
-                console.print(
-                    "[red]No initial cash deposit. Calculations may be off as this assumes trading from a "
-                    "funded account[/red]."
-                )
-            # Load in trades df and do some quick editing
-            trades.Name = trades.Name.map(lambda x: x.upper())
-            trades["Side"] = trades["Side"].map(
-                lambda x: 1
-                if x.lower() in ["deposit", "buy"]
-                else (-1 if x.lower() == "sell" else 0)
-            )
-            trades["Value"] = trades.Quantity * trades.Price * trades.Side
-            # Make selling negative for cumulative sum of quantity later
-            trades["Quantity"] = trades["Quantity"] * trades["Side"]
-            # Should be simply extended for crypto/bonds etc
-            # Treat etf as stock for yfinance historical.
-            self._stock_tickers = list(
-                set(trades[trades.Type == "stock"].Name.to_list())
-            )
+    portfolio_rvol = metrics_model.rolling_volatility(
+        portfolio_engine.portfolio_returns, window
+    )
+    if portfolio_rvol.empty:
+        return pd.DataFrame()
 
-            self._etf_tickers = list(set(trades[trades.Type == "etf"].Name.to_list()))
+    benchmark_rvol = metrics_model.rolling_volatility(
+        portfolio_engine.benchmark_returns, window
+    )
+    if benchmark_rvol.empty:
+        return pd.DataFrame()
 
-            self._crypto_tickers = list(
-                set(trades[trades.Type == "crypto"].Name.to_list())
-            )
-            self._start_date = trades.Date[0]
-            # Copy pandas notation
-            self.empty = False
-        self.trades = trades
-        self.portfolio = pd.DataFrame()
+    df = pd.DataFrame(portfolio_rvol).join(pd.DataFrame(benchmark_rvol))
+    df.columns.values[0] = "portfolio"
+    df.columns.values[1] = "benchmark"
 
-    @log_start_end(log=logger)
-    def add_trade(self, trade_info: Dict):
-        self.trades = self.trades.append([trade_info])
-        self.empty = False
+    return df
 
-    @log_start_end(log=logger)
-    def add_rf(self, risk_free_rate: float):
-        """Sets the risk free rate for calculation purposes"""
-        self.rf = risk_free_rate
 
-    @log_start_end(log=logger)
-    def generate_holdings_from_trades(self, yfinance_use_close: bool = False):
-        """Generates portfolio data from list of trades"""
-        # Load historical prices from yahoo (option to get close instead of adj close)
-        self.get_yahoo_close_prices(use_close=yfinance_use_close)
-        self.get_crypto_yfinance()
+def get_rolling_sharpe(
+    portfolio_engine: pd.DataFrame, risk_free_rate: float = 0, window: str = "1y"
+) -> pd.DataFrame:
+    """Get rolling sharpe ratio
 
-        # Pivot list of trades on Name.  This will give a multi-index df where the multiindex are the individual ticker
-        # and the values from the table
-        portfolio = self.trades.pivot(
-            index="Date",
-            columns="Name",
-            values=["Quantity", "Price", "Fees", "Premium", "Side", "Value"],
-        )
-        # Merge with historical close prices (and fillna)
-        portfolio = pd.merge(
-            portfolio,
-            self._historical_prices,
-            how="right",
-            left_index=True,
-            right_index=True,
-        ).fillna(0)
+    Parameters
+    ----------
+    portfolio_returns : pd.Series
+        Series of portfolio returns
+    risk_free_rate : float
+        Risk free rate
+    window : str
+        Rolling window to use
+        Possible options: mtd, qtd, ytd, 1d, 5d, 10d, 1m, 3m, 6m, 1y, 3y, 5y, 10y
 
-        is_there_stock_or_etf = self._stock_tickers + self._etf_tickers
+    Returns
+    -------
+    pd.DataFrame
+        Rolling sharpe ratio DataFrame
 
-        # Merge with crypto
-        if self._crypto_tickers:
-            portfolio = pd.merge(
-                portfolio,
-                self._historical_crypto,
-                how="left" if is_there_stock_or_etf else "right",
-                left_index=True,
-                right_index=True,
-            ).fillna(0)
-        else:
-            portfolio[pd.MultiIndex.from_product([["Close"], ["crypto"]])] = 0
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.rsharpe(p)
+    """
 
-        # Add cumulative Quantity held
-        portfolio["Quantity"] = portfolio["Quantity"].cumsum()
+    portfolio_rsharpe = metrics_model.rolling_sharpe(
+        portfolio_engine.portfolio_returns, risk_free_rate, window
+    )
+    if portfolio_rsharpe.empty:
+        return pd.DataFrame()
 
-        # Add holdings for each 'type'.  Will check for tickers matching type.
+    benchmark_rsharpe = metrics_model.rolling_sharpe(
+        portfolio_engine.benchmark_returns, risk_free_rate, window
+    )
+    if benchmark_rsharpe.empty:
+        return pd.DataFrame()
 
-        if self._stock_tickers:
-            # Find end of day holdings for each stock
-            portfolio[
-                pd.MultiIndex.from_product([["StockHoldings"], self._stock_tickers])
-            ] = (
-                portfolio["Quantity"][self._stock_tickers]
-                * portfolio["Close"][self._stock_tickers]
-            )
-        else:
-            portfolio[pd.MultiIndex.from_product([["StockHoldings"], ["temp"]])] = 0
+    df = pd.DataFrame(portfolio_rsharpe).join(pd.DataFrame(benchmark_rsharpe))
+    df.columns.values[0] = "portfolio"
+    df.columns.values[1] = "benchmark"
 
-        if self._etf_tickers:
-            # Find end of day holdings for each ETF
-            portfolio[
-                pd.MultiIndex.from_product([["ETFHoldings"], self._etf_tickers])
-            ] = (
-                portfolio["Quantity"][self._etf_tickers]
-                * portfolio["Close"][self._etf_tickers]
-            )
-        else:
-            portfolio[pd.MultiIndex.from_product([["ETFHoldings"], ["temp"]])] = 0
-        if self._crypto_tickers:
-            # Find end of day holdings for each stock
-            portfolio[
-                pd.MultiIndex.from_product([["CryptoHoldings"], self._crypto_tickers])
-            ] = (
-                portfolio["Quantity"][self._crypto_tickers]
-                * portfolio["Close"][self._crypto_tickers]
-            )
-        else:
-            portfolio[pd.MultiIndex.from_product([["CryptoHoldings"], ["temp"]])] = 0
+    return df
 
-        # Find amount of cash held in account.  Defined as deposited cash - stocks bought + stocks sold
-        portfolio["CashHold"] = portfolio["Value"]["CASH"] - portfolio["Value"][
-            self._stock_tickers + self._etf_tickers + self._crypto_tickers
-        ].sum(axis=1)
 
-        # Subtract Fees or Premiums from cash holdings
-        portfolio["CashHold"] = (
-            portfolio["CashHold"]
-            - portfolio["Fees"].sum(axis=1)
-            - portfolio["Premium"].sum(axis=1)
-        )
-        portfolio["CashHold"] = portfolio["CashHold"].cumsum()
+def get_rolling_sortino(
+    portfolio_engine: PortfolioEngine,
+    risk_free_rate: float = 0,
+    window: str = "1y",
+) -> pd.DataFrame:
+    """Get rolling sortino
 
-        portfolio["TotalHoldings"] = (
-            portfolio["CashHold"]
-            + portfolio["StockHoldings"].sum(axis=1)
-            + portfolio["ETFHoldings"].sum(axis=1)
-            + portfolio["CryptoHoldings"].sum(axis=1)
-        )
+    Parameters
+    ----------
+    portfolio : PortfolioEngine
+        PortfolioEngine object
+    window: str
+        interval for window to consider
+        Possible options: mtd, qtd, ytd, 1d, 5d, 10d, 1m, 3m, 6m, 1y, 3y, 5y, 10y
+    risk_free_rate: float
+        Value to use for risk free rate in sharpe/other calculations
 
-        self.portfolio_value = portfolio["TotalHoldings"]
-        self.returns = portfolio["TotalHoldings"].pct_change().dropna()
-        self.ItemizedHoldings = pd.DataFrame(
-            {
-                "Stocks": portfolio["StockHoldings"][self._stock_tickers].sum(axis=1),
-                "ETFs": portfolio["ETFHoldings"][self._etf_tickers].sum(axis=1),
-                "Crypto": portfolio["CryptoHoldings"][self._crypto_tickers].sum(axis=1),
-                "Cash": portfolio["CashHold"],
-            }
-        )
-        self.portfolio = portfolio.copy()
+    Returns
+    -------
+    pd.DataFrame
+        Rolling sortino ratio DataFrame
 
-    # TODO: Add back dividends
-    @log_start_end(log=logger)
-    def get_yahoo_close_prices(self, use_close: bool = False):
-        """Gets historical adj close prices for tickers in list of trades"""
-        tickers_to_download = self._stock_tickers + self._etf_tickers
-        if tickers_to_download:
-            if not use_close:
-                self._historical_prices = yf.download(
-                    tickers_to_download, start=self._start_date, progress=False
-                )["Adj Close"]
-            else:
-                self._historical_prices = yf.download(
-                    tickers_to_download, start=self._start_date, progress=False
-                )["Close"]
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.rsort(p)
+    """
 
-            # Adjust for case of only 1 ticker
-            if len(tickers_to_download) == 1:
-                self._historical_prices = pd.DataFrame(self._historical_prices)
-                self._historical_prices.columns = tickers_to_download
+    portfolio_rsortino = metrics_model.rolling_sortino(
+        portfolio_engine.portfolio_returns, risk_free_rate, window
+    )
+    if portfolio_rsortino.empty:
+        return pd.DataFrame()
 
-        else:
-            data_for_index_purposes = yf.download(
-                "AAPL", start=self._start_date, progress=False
-            )["Adj Close"]
-            self._historical_prices = pd.DataFrame()
-            self._historical_prices.index = data_for_index_purposes.index
-            self._historical_prices["stock"] = 0
+    benchmark_rsortino = metrics_model.rolling_sortino(
+        portfolio_engine.benchmark_returns, risk_free_rate, window
+    )
+    if benchmark_rsortino.empty:
+        return pd.DataFrame()
 
-        self._historical_prices["CASH"] = 1
+    df = pd.DataFrame(portfolio_rsortino).join(pd.DataFrame(benchmark_rsortino))
+    df.columns.values[0] = "portfolio"
+    df.columns.values[1] = "benchmark"
 
-        # Make columns a multi-index.  This helps the merging.
-        self._historical_prices.columns = pd.MultiIndex.from_product(
-            [["Close"], self._historical_prices.columns]
-        )
+    return df
 
-    @log_start_end(log=logger)
-    def get_crypto_yfinance(self):
-        """Gets historical coin data from coingecko"""
-        if self._crypto_tickers:
-            list_of_coins = [f"{coin}-USD" for coin in self._crypto_tickers]
-            self._historical_crypto = yf.download(
-                list_of_coins, start=self._start_date, progress=False
-            )["Close"]
 
-            if len(list_of_coins) == 1:
-                self._historical_crypto = pd.DataFrame(self._historical_crypto)
-                self._historical_crypto.columns = list_of_coins
+@log_start_end(log=logger)
+def get_rolling_beta(
+    portfolio_engine: PortfolioEngine,
+    window: str = "1y",
+) -> pd.DataFrame:
+    """Get rolling beta using portfolio and benchmark returns
 
-            self._historical_crypto.columns = pd.MultiIndex.from_product(
-                [["Close"], [col[:-4] for col in self._historical_crypto.columns]]
-            )
+    Parameters
+    ----------
+    portfolio : PortfolioEngine
+        PortfolioEngine object
+    window: string
+        Interval used for rolling values.
+        Possible options: mtd, qtd, ytd, 1d, 5d, 10d, 1m, 3m, 6m, 1y, 3y, 5y, 10y.
 
-        else:
-            self._historical_crypto = pd.DataFrame()
-            self._historical_crypto[
-                pd.MultiIndex.from_product([["Close"], ["crypto"]])
-            ] = 0
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of the portfolio's rolling beta
 
-    @log_start_end(log=logger)
-    def add_benchmark(self, benchmark: str):
-        """Adds benchmark dataframe"""
-        self.benchmark = yf.download(benchmark, start=self._start_date, progress=False)[
-            "Adj Close"
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.rbeta(p)
+    """
+
+    df = metrics_model.rolling_beta(
+        portfolio_engine.portfolio_returns, portfolio_engine.benchmark_returns, window
+    )
+
+    return df
+
+
+def get_summary(
+    portfolio_engine: PortfolioEngine,
+    window: str = "all",
+    risk_free_rate: float = 0,
+) -> pd.DataFrame:
+    """Get portfolio and benchmark returns summary
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    window : str
+        interval to compare cumulative returns and benchmark
+    risk_free_rate : float
+        Risk free rate for calculations
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with portfolio and benchmark returns summary
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.summary(p)
+    """
+
+    portfolio_returns = portfolio_helper.filter_df_by_period(
+        portfolio_engine.portfolio_returns, window
+    )
+    benchmark_returns = portfolio_helper.filter_df_by_period(
+        portfolio_engine.benchmark_returns, window
+    )
+
+    r2_portfolio_returns = portfolio_returns.copy()
+    r2_benchmark_returns = benchmark_returns.copy()
+    if len(portfolio_returns) > len(benchmark_returns):
+        r2_portfolio_returns = r2_portfolio_returns[
+            r2_portfolio_returns.index.isin(r2_benchmark_returns.index)
         ]
-        self.benchmark_returns = self.benchmark.pct_change().dropna()
+    elif len(portfolio_returns) < len(benchmark_returns):
+        r2_benchmark_returns = r2_benchmark_returns[
+            r2_benchmark_returns.index.isin(r2_portfolio_returns.index)
+        ]
 
-    # pylint:disable=no-member
-    @classmethod
-    @log_start_end(log=logger)
-    def from_csv(cls, csv_path: str):
-        """Class method that generates a portfolio object from a csv file
+    metrics = {
+        "Volatility": [portfolio_returns.std(), benchmark_returns.std()],
+        "Skew": [
+            scipy.stats.skew(portfolio_returns),
+            scipy.stats.skew(benchmark_returns),
+        ],
+        "Kurtosis": [
+            scipy.stats.kurtosis(portfolio_returns),
+            scipy.stats.kurtosis(benchmark_returns),
+        ],
+        "Maximum Drawdown": [
+            metrics_model.maximum_drawdown(portfolio_returns),
+            metrics_model.maximum_drawdown(benchmark_returns),
+        ],
+        "Sharpe ratio": [
+            metrics_model.sharpe_ratio(portfolio_returns, risk_free_rate),
+            metrics_model.sharpe_ratio(benchmark_returns, risk_free_rate),
+        ],
+        "Sortino ratio": [
+            metrics_model.sortino_ratio(portfolio_returns, risk_free_rate),
+            metrics_model.sortino_ratio(benchmark_returns, risk_free_rate),
+        ],
+        "R2 Score": [
+            r2_score(r2_portfolio_returns, r2_benchmark_returns),
+            r2_score(r2_portfolio_returns, r2_benchmark_returns),
+        ],
+    }
 
-        Parameters
-        ----------
-        csv_path: str
-            Path to csv of trade data
+    summary = pd.DataFrame(
+        metrics.values(), index=metrics.keys(), columns=["Portfolio", "Benchmark"]
+    )
+    summary["Difference"] = summary["Portfolio"] - summary["Benchmark"]
+    summary.loc["Volatility"] = summary.loc["Volatility"].apply("{:.2%}".format)
+    summary.loc["Maximum Drawdown"] = summary.loc["Maximum Drawdown"].apply(
+        "{:.2%}".format
+    )
+    summary.loc["R2 Score"] = summary.loc["R2 Score"].apply("{:.2%}".format)
 
-        Returns
-        -------
-        Portfolio
-            Initialized portfolio object
-        """
-        # Load in a list of trades
-        trades = pd.read_csv(csv_path)
-        # Convert the date to what pandas understands
-        trades.Date = pd.to_datetime(trades.Date)
-        # Sort by date to make more sense of trades
-        trades = trades.sort_values(by="Date")
-        # Build the portfolio object
-        return cls(trades)
+    return summary
 
-    # pylint:enable=no-member
-    @classmethod
-    @log_start_end(log=logger)
-    def from_custom_inputs_and_weights(
-        cls,
-        start_date: str,
-        list_of_symbols: List[str],
-        list_of_weights: List[float],
-        list_of_types: List[str],
-        amount: float = 100_000,
-    ):
-        """Create a class instance from supplied weights and tickers.
-        This first will generate a dataframe of trades then pass to generator.
 
-        Parameters
-        ----------
-        start_date: str
-            Start date
-        list_of_symbols: List[str]
-            List of symbols to consider
-        list_of_weights: List[float]
-            List of weights (in theory negative should be fine),  Must add to 1
-        list_of_types: List[str]
-            List of asset type (stock or crypto)
-        amount: float
-            Amount for portfolio allocation
+@log_start_end(log=logger)
+def get_assets_allocation(
+    portfolio_engine: PortfolioEngine,
+    tables: bool = False,
+    limit: int = 10,
+    recalculate: bool = False,
+) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
+    """Display portfolio asset allocation compared to the benchmark
 
-        Returns
-        -------
-        Portfolio
-            Class instance
-        """
-        if not np.isclose(np.sum(list_of_weights), 1, 0.03):
-            logger.error("Weights do not add to 1")
-            console.print("[red]Weights do not add to 1[/red].")
-            return cls()
-        list_of_amounts = [weight * amount for weight in list_of_weights]
-        # Name,Type,Quantity,Date,Price,Fees,Premium,Side
-        inputs: Dict[str, List[Union[str, float, int]]] = {}
-        inputs["Name"] = ["cash"]
-        inputs["Type"] = ["cash"]
-        inputs["Quantity"] = [1]
-        inputs["Price"] = [amount]
-        inputs["Fees"] = [0]
-        inputs["Premium"] = [0]
-        inputs["Side"] = ["deposit"]
-        inputs["Date"] = [start_date]
-        for ticker, type_, amounts in zip(
-            list_of_symbols, list_of_types, list_of_amounts
-        ):
-            inputs["Name"].append(ticker)
-            inputs["Type"].append(type_)
-            inputs["Fees"].append(0)
-            inputs["Premium"].append(0)
-            inputs["Side"].append("buy")
-            if type_ == "crypto":
-                ticker += "-USD"
-            # Find how much of each ticker we can buy
-            temp = yf.download(ticker, start=start_date, progress=False)["Adj Close"]
-            price_on_date = temp[0]
-            inputs["Date"].append(temp.index[0].strftime("%Y-%m-%d"))
-            inputs["Quantity"].append(amounts / price_on_date)
-            inputs["Price"].append(price_on_date)
-        trades = pd.DataFrame.from_dict(inputs)
-        trades.Date = pd.to_datetime(trades.Date)
-        # Make sure to fix the 'cash' date if it is weekend
-        if trades.Date[1] != trades.Date[0]:
-            trades.Date[0] = trades.Date[1]
-        return cls(trades)
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    tables: bool
+        Whether to include separate allocation tables
+    limit: int
+        The amount of assets you wish to show, by default this is set to 10
+    recalculate: bool
+        Flag to force recalculate allocation if already exists
+
+    Returns
+    -------
+    Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]
+        DataFrame with combined allocation plus individual allocation if tables is `True`.
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.alloc.assets(p)
+    """
+
+    portfolio_engine.calculate_allocation(category="Asset", recalculate=recalculate)
+
+    benchmark_allocation = portfolio_engine.benchmark_assets_allocation.iloc[:limit]
+    portfolio_allocation = portfolio_engine.portfolio_assets_allocation.iloc[:limit]
+
+    combined = join_allocation(portfolio_allocation, benchmark_allocation, "Symbol")
+
+    if tables:
+        return combined, portfolio_allocation, benchmark_allocation
+    return combined
+
+
+def get_sectors_allocation(
+    portfolio_engine: PortfolioEngine,
+    limit: int = 10,
+    tables: bool = False,
+    recalculate: bool = False,
+):
+    """Display portfolio sector allocation compared to the benchmark
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    tables: bool
+        Whether to include separate allocation tables
+    limit: int
+        The amount of assets you wish to show, by default this is set to 10
+    recalculate: bool
+        Flag to force recalculate allocation if already exists
+
+    Returns
+    -------
+    Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]
+        DataFrame with combined allocation plus individual allocation if tables is `True`.
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.alloc.sectors(p)
+    """
+
+    portfolio_engine.calculate_allocation(category="Sector", recalculate=recalculate)
+
+    benchmark_allocation = portfolio_engine.benchmark_sectors_allocation.iloc[:limit]
+    portfolio_allocation = portfolio_engine.portfolio_sectors_allocation.iloc[:limit]
+
+    combined = join_allocation(portfolio_allocation, benchmark_allocation, "Sector")
+
+    if tables:
+        return combined, portfolio_allocation, benchmark_allocation
+    return combined
+
+
+def get_countries_allocation(
+    portfolio_engine: PortfolioEngine,
+    limit: int = 10,
+    tables: bool = False,
+    recalculate: bool = False,
+):
+    """Display portfolio country allocation compared to the benchmark
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    tables: bool
+        Whether to include separate allocation tables
+    limit: int
+        The amount of assets you wish to show, by default this is set to 10
+    recalculate: bool
+        Flag to force recalculate allocation if already exists
+
+    Returns
+    -------
+    Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]
+        DataFrame with combined allocation plus individual allocation if tables is `True`.
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.alloc.countries(p)
+    """
+
+    portfolio_engine.calculate_allocation(category="Country", recalculate=recalculate)
+
+    benchmark_allocation = portfolio_engine.benchmark_countries_allocation.iloc[:limit]
+    portfolio_allocation = portfolio_engine.portfolio_countries_allocation.iloc[:limit]
+
+    combined = join_allocation(portfolio_allocation, benchmark_allocation, "Country")
+
+    if tables:
+        return combined, portfolio_allocation, benchmark_allocation
+    return combined
+
+
+def get_regions_allocation(
+    portfolio_engine: PortfolioEngine,
+    limit: int = 10,
+    tables: bool = False,
+    recalculate: bool = False,
+):
+    """Display portfolio region allocation compared to the benchmark
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    tables: bool
+        Whether to include separate allocation tables
+    limit: int
+        The amount of assets you wish to show, by default this is set to 10
+    recalculate: bool
+        Flag to force recalculate allocation if already exists
+
+    Returns
+    -------
+    Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]
+        DataFrame with combined allocation plus individual allocation if tables is `True`.
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.alloc.regions(p)
+    """
+
+    portfolio_engine.calculate_allocation(category="Region", recalculate=recalculate)
+
+    benchmark_allocation = portfolio_engine.benchmark_regions_allocation.iloc[:limit]
+    portfolio_allocation = portfolio_engine.portfolio_regions_allocation.iloc[:limit]
+
+    combined = join_allocation(portfolio_allocation, benchmark_allocation, "Region")
+
+    if tables:
+        return combined, portfolio_allocation, benchmark_allocation
+    return combined
+
+
+@log_start_end(log=logger)
+def get_r2_score(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get R2 Score for portfolio and benchmark selected
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with R2 Score between portfolio and benchmark for different periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.rsquare(p)
+    """
+
+    vals = list()
+    for period in PERIODS:
+        vals.append(
+            round(
+                r2_score(
+                    portfolio_helper.filter_df_by_period(
+                        portfolio_engine.portfolio_returns, period
+                    ),
+                    portfolio_helper.filter_df_by_period(
+                        portfolio_engine.benchmark_returns, period
+                    ),
+                ),
+                3,
+            )
+        )
+    return pd.DataFrame(vals, index=PERIODS, columns=["R2 Score"])
+
+
+@log_start_end(log=logger)
+def get_skewness(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get skewness for portfolio and benchmark selected
+
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with skewness for portfolio and benchmark for different periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.skew(p)
+    """
+
+    vals = list()
+    for period in PERIODS:
+        vals.append(
+            [
+                round(
+                    scipy.stats.skew(
+                        portfolio_helper.filter_df_by_period(
+                            portfolio_engine.portfolio_returns, period
+                        )
+                    ),
+                    3,
+                ),
+                round(
+                    scipy.stats.skew(
+                        portfolio_helper.filter_df_by_period(
+                            portfolio_engine.benchmark_returns, period
+                        )
+                    ),
+                    3,
+                ),
+            ]
+        )
+    return pd.DataFrame(vals, index=PERIODS, columns=["Portfolio", "Benchmark"])
+
+
+@log_start_end(log=logger)
+def get_kurtosis(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get kurtosis for portfolio and benchmark selected
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with kurtosis for portfolio and benchmark for different periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.kurtosis(p)
+    """
+
+    vals = list()
+    for period in PERIODS:
+        vals.append(
+            [
+                round(
+                    scipy.stats.kurtosis(
+                        portfolio_helper.filter_df_by_period(
+                            portfolio_engine.portfolio_returns, period
+                        )
+                    ),
+                    3,
+                ),
+                round(
+                    scipy.stats.skew(
+                        portfolio_helper.filter_df_by_period(
+                            portfolio_engine.benchmark_returns, period
+                        )
+                    ),
+                    3,
+                ),
+            ]
+        )
+    return pd.DataFrame(vals, index=PERIODS, columns=["Portfolio", "Benchmark"])
+
+
+@log_start_end(log=logger)
+def get_stats(portfolio_engine: PortfolioEngine, window: str = "all") -> pd.DataFrame:
+    """Get stats for portfolio and benchmark selected based on a certain interval
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    window : str
+        interval to consider. Choices are: mtd, qtd, ytd, 3m, 6m, 1y, 3y, 5y, 10y, all
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with overall stats for portfolio and benchmark for a certain period
+    """
+
+    df = (
+        portfolio_helper.filter_df_by_period(portfolio_engine.portfolio_returns, window)
+        .describe()
+        .to_frame()
+        .join(
+            portfolio_helper.filter_df_by_period(
+                portfolio_engine.benchmark_returns, window
+            ).describe()
+        )
+    )
+    df.columns = ["Portfolio", "Benchmark"]
+    return df
+
+
+@log_start_end(log=logger)
+def get_volatility(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get volatility for portfolio and benchmark selected
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with volatility for portfolio and benchmark for different periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.volatility(p)
+    """
+
+    vals = list()
+    for period in PERIODS:
+        port_rets = portfolio_helper.filter_df_by_period(
+            portfolio_engine.portfolio_returns, period
+        )
+        bench_rets = portfolio_helper.filter_df_by_period(
+            portfolio_engine.benchmark_returns, period
+        )
+        vals.append(
+            [
+                round(
+                    port_rets.std() * (len(port_rets) ** 0.5),
+                    3,
+                ),
+                round(
+                    bench_rets.std() * (len(bench_rets) ** 0.5),
+                    3,
+                ),
+            ]
+        )
+    return pd.DataFrame(
+        vals,
+        index=PERIODS,
+        columns=["Portfolio [%]", "Benchmark [%]"],
+    )
+
+
+@log_start_end(log=logger)
+def get_sharpe_ratio(
+    portfolio_engine: PortfolioEngine, risk_free_rate: float = 0
+) -> pd.DataFrame:
+    """Get sharpe ratio for portfolio and benchmark selected
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    risk_free_rate: float
+        Risk free rate value
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with sharpe ratio for portfolio and benchmark for different periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.sharpe(p)
+    """
+
+    vals = list()
+    for period in PERIODS:
+        vals.append(
+            [
+                round(
+                    metrics_model.sharpe_ratio(
+                        portfolio_helper.filter_df_by_period(
+                            portfolio_engine.portfolio_returns, period
+                        ),
+                        risk_free_rate,
+                    ),
+                    3,
+                ),
+                round(
+                    metrics_model.sharpe_ratio(
+                        portfolio_helper.filter_df_by_period(
+                            portfolio_engine.benchmark_returns, period
+                        ),
+                        risk_free_rate,
+                    ),
+                    3,
+                ),
+            ]
+        )
+    return pd.DataFrame(vals, index=PERIODS, columns=["Portfolio", "Benchmark"])
+
+
+@log_start_end(log=logger)
+def get_sortino_ratio(
+    portfolio_engine: PortfolioEngine, risk_free_rate: float = 0
+) -> pd.DataFrame:
+    """Get sortino ratio for portfolio and benchmark selected
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    risk_free_rate: float
+        Risk free rate value
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with sortino ratio for portfolio and benchmark for different periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.sortino(p)
+    """
+
+    vals = list()
+    for period in PERIODS:
+        vals.append(
+            [
+                round(
+                    metrics_model.sortino_ratio(
+                        portfolio_helper.filter_df_by_period(
+                            portfolio_engine.portfolio_returns, period
+                        ),
+                        risk_free_rate,
+                    ),
+                    3,
+                ),
+                round(
+                    metrics_model.sortino_ratio(
+                        portfolio_helper.filter_df_by_period(
+                            portfolio_engine.benchmark_returns, period
+                        ),
+                        risk_free_rate,
+                    ),
+                    3,
+                ),
+            ]
+        )
+    return pd.DataFrame(vals, index=PERIODS, columns=["Portfolio", "Benchmark"])
+
+
+@log_start_end(log=logger)
+def get_maximum_drawdown_ratio(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get maximum drawdown ratio for portfolio and benchmark selected
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with maximum drawdown for portfolio and benchmark for different periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.maxdrawdown(p)
+    """
+
+    vals = list()
+    for period in PERIODS:
+        vals.append(
+            [
+                round(
+                    metrics_model.maximum_drawdown(
+                        portfolio_helper.filter_df_by_period(
+                            portfolio_engine.portfolio_returns, period
+                        )
+                    ),
+                    3,
+                ),
+                round(
+                    metrics_model.maximum_drawdown(
+                        portfolio_helper.filter_df_by_period(
+                            portfolio_engine.benchmark_returns, period
+                        )
+                    ),
+                    3,
+                ),
+            ]
+        )
+    return pd.DataFrame(vals, index=PERIODS, columns=["Portfolio", "Benchmark"])
+
+
+@log_start_end(log=logger)
+def get_gaintopain_ratio(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get Pain-to-Gain ratio based on historical data
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of the portfolio's gain-to-pain ratio
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.gaintopain(p)
+    """
+
+    gtp_period_df = metrics_model.get_gaintopain_ratio(
+        portfolio_engine.historical_trade_data,
+        portfolio_engine.benchmark_trades,
+        portfolio_engine.benchmark_returns,
+    )
+
+    return gtp_period_df
+
+
+@log_start_end(log=logger)
+def get_tracking_error(
+    portfolio_engine: PortfolioEngine, window: int = 252
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """Get tracking error
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    window: int
+        Interval used for rolling values
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of tracking errors during different time windows
+    pd.Series
+        Series of rolling tracking error
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.trackerr(p)
+    """
+
+    trackr_period_df, trackr_rolling = metrics_model.get_tracking_error(
+        portfolio_engine.portfolio_returns, portfolio_engine.benchmark_returns, window
+    )
+
+    return trackr_period_df, trackr_rolling
+
+
+@log_start_end(log=logger)
+def get_information_ratio(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get information ratio
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of the information ratio during different time periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.information(p)
+    """
+
+    ir_period_df = metrics_model.get_information_ratio(
+        portfolio_engine.portfolio_returns,
+        portfolio_engine.historical_trade_data,
+        portfolio_engine.benchmark_trades,
+        portfolio_engine.benchmark_returns,
+    )
+
+    return ir_period_df
+
+
+@log_start_end(log=logger)
+def get_tail_ratio(
+    portfolio_engine: PortfolioEngine, window: int = 252
+) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
+    """Get tail ratio
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    window: int
+        Interval used for rolling values
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of the portfolios and the benchmarks tail ratio during different time windows
+    pd.Series
+        Series of the portfolios rolling tail ratio
+    pd.Series
+        Series of the benchmarks rolling tail ratio
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.tail(p)
+    """
+
+    tailr_period_df, portfolio_tr, benchmark_tr = metrics_model.get_tail_ratio(
+        portfolio_engine.portfolio_returns, portfolio_engine.benchmark_returns, window
+    )
+
+    return tailr_period_df, portfolio_tr, benchmark_tr
+
+
+@log_start_end(log=logger)
+def get_common_sense_ratio(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get common sense ratio
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of the portfolios and the benchmarks common sense ratio during different time periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.commonsense(p)
+    """
+
+    csr_period_df = metrics_model.get_common_sense_ratio(
+        portfolio_engine.portfolio_returns,
+        portfolio_engine.historical_trade_data,
+        portfolio_engine.benchmark_trades,
+        portfolio_engine.benchmark_returns,
+    )
+
+    return csr_period_df
+
+
+@log_start_end(log=logger)
+def get_jensens_alpha(
+    portfolio_engine: PortfolioEngine, risk_free_rate: float = 0, window: str = "1y"
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """Get jensen's alpha
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    window: str
+        Interval used for rolling values
+    risk_free_rate: float
+        Risk free rate
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of jensens's alpha during different time windows
+    pd.Series
+        Series of jensens's alpha data
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.jensens(p)
+    """
+
+    ja_period_df, ja_rolling = metrics_model.jensens_alpha(
+        portfolio_engine.portfolio_returns,
+        portfolio_engine.historical_trade_data,
+        portfolio_engine.benchmark_trades,
+        portfolio_engine.benchmark_returns,
+        risk_free_rate,
+        window,
+    )
+
+    return ja_period_df, ja_rolling
+
+
+@log_start_end(log=logger)
+def get_calmar_ratio(
+    portfolio_engine: PortfolioEngine, window: int = 756
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """Get calmar ratio
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    window: int
+        Interval used for rolling values
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of calmar ratio of the benchmark and portfolio during different time periods
+    pd.Series
+        Series of calmar ratio data
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.calmar(p)
+    """
+
+    cr_period_df, cr_rolling = metrics_model.get_calmar_ratio(
+        portfolio_engine.portfolio_returns,
+        portfolio_engine.historical_trade_data,
+        portfolio_engine.benchmark_trades,
+        portfolio_engine.benchmark_returns,
+        window,
+    )
+
+    return cr_period_df, cr_rolling
+
+
+@log_start_end(log=logger)
+def get_kelly_criterion(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get kelly criterion
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of kelly criterion of the portfolio during different time periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.kelly(p)
+    """
+
+    kc_period_df = metrics_model.get_kelly_criterion(
+        portfolio_engine.portfolio_returns, portfolio_engine.portfolio_trades
+    )
+
+    return kc_period_df
+
+
+@log_start_end(log=logger)
+def get_payoff_ratio(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get payoff ratio
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of payoff ratio of the portfolio during different time periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.payoff(p)
+    During some time periods there were no losing trades. Thus some values could not be calculated.
+    """
+
+    pr_period_ratio = metrics_model.get_payoff_ratio(portfolio_engine.portfolio_trades)
+
+    return pr_period_ratio
+
+
+@log_start_end(log=logger)
+def get_profit_factor(portfolio_engine: PortfolioEngine) -> pd.DataFrame:
+    """Get profit factor
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of profit factor of the portfolio during different time periods
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.metric.profitfactor(p)
+    During some time periods there were no losing trades. Thus some values could not be calculated.
+    """
+
+    pf_period_df = metrics_model.get_profit_factor(portfolio_engine.portfolio_trades)
+
+    return pf_period_df
+
+
+@log_start_end(log=logger)
+def get_performance_vs_benchmark(
+    portfolio_engine: PortfolioEngine,
+    show_all_trades: bool = False,
+) -> pd.DataFrame:
+    """Get portfolio performance vs the benchmark
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    show_all_trades: bool
+        Whether to also show all trades made and their performance (default is False)
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with portfolio performance vs the benchmark
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.perf(p)
+    """
+
+    portfolio_trades = portfolio_engine.portfolio_trades
+    benchmark_trades = portfolio_engine.benchmark_trades
+
+    portfolio_trades.index = pd.to_datetime(portfolio_trades["Date"].values)
+    benchmark_trades.index = pd.to_datetime(benchmark_trades["Date"].values)
+
+    if show_all_trades:
+        # Combine DataFrames
+        combined = pd.concat(
+            [
+                portfolio_trades[
+                    ["Date", "Ticker", "Portfolio Value", "Portfolio % Return"]
+                ],
+                benchmark_trades[["Benchmark Value", "Benchmark % Return"]],
+            ],
+            axis=1,
+        )
+
+        # Calculate alpha
+        combined["Alpha"] = (
+            combined["Portfolio % Return"] - combined["Benchmark % Return"]
+        )
+
+        combined["Date"] = pd.to_datetime(combined["Date"]).dt.date
+
+        return combined
+
+    # Calculate total value and return
+    total_investment_difference = (
+        portfolio_trades["Portfolio Investment"].sum()
+        - benchmark_trades["Benchmark Investment"].sum()
+    )
+    total_value_difference = (
+        portfolio_trades["Portfolio Value"].sum()
+        - benchmark_trades["Benchmark Value"].sum()
+    )
+    total_portfolio_return = (
+        portfolio_trades["Portfolio Value"].sum()
+        / portfolio_trades["Portfolio Investment"].sum()
+    ) - 1
+    total_benchmark_return = (
+        benchmark_trades["Benchmark Value"].sum()
+        / benchmark_trades["Benchmark Investment"].sum()
+    ) - 1
+    total_abs_return_difference = (
+        portfolio_trades["Portfolio Value"].sum()
+        - portfolio_trades["Portfolio Investment"].sum()
+    ) - (
+        benchmark_trades["Benchmark Value"].sum()
+        - benchmark_trades["Benchmark Investment"].sum()
+    )
+
+    totals = pd.DataFrame.from_dict(
+        {
+            "Total Investment": [
+                portfolio_trades["Portfolio Investment"].sum(),
+                benchmark_trades["Benchmark Investment"].sum(),
+                total_investment_difference,
+            ],
+            "Total Value": [
+                portfolio_trades["Portfolio Value"].sum(),
+                benchmark_trades["Benchmark Value"].sum(),
+                total_value_difference,
+            ],
+            "Total % Return": [
+                f"{total_portfolio_return:.2%}",
+                f"{total_benchmark_return:.2%}",
+                f"{total_portfolio_return - total_benchmark_return:.2%}",
+            ],
+            "Total Abs Return": [
+                portfolio_trades["Portfolio Value"].sum()
+                - portfolio_trades["Portfolio Investment"].sum(),
+                benchmark_trades["Benchmark Value"].sum()
+                - benchmark_trades["Benchmark Investment"].sum(),
+                total_abs_return_difference,
+            ],
+        },
+        orient="index",
+        columns=["Portfolio", "Benchmark", "Difference"],
+    )
+
+    return totals.replace(0, "-")
+
+
+@log_start_end(log=logger)
+def get_var(
+    portfolio_engine: PortfolioEngine,
+    use_mean: bool = False,
+    adjusted_var: bool = False,
+    student_t: bool = False,
+    percentile: float = 99.9,
+) -> pd.DataFrame:
+    """Get portfolio VaR
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    use_mean: bool
+        if one should use the data mean return
+    adjusted_var: bool
+        if one should have VaR adjusted for skew and kurtosis (Cornish-Fisher-Expansion)
+    student_t: bool
+        If one should use the student-t distribution
+    percentile: float
+        var percentile (%)
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with portfolio VaR
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.var(p)
+    """
+
+    return qa_model.get_var(
+        data=portfolio_engine.portfolio_returns,
+        use_mean=use_mean,
+        adjusted_var=adjusted_var,
+        student_t=student_t,
+        percentile=percentile,
+        portfolio=True,
+    )
+
+
+@log_start_end(log=logger)
+def get_es(
+    portfolio_engine: PortfolioEngine,
+    use_mean: bool = False,
+    distribution: str = "normal",
+    percentile: float = 99.9,
+) -> pd.DataFrame:
+    """Get portfolio expected shortfall
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    use_mean:
+        if one should use the data mean return
+    distribution: str
+        choose distribution to use: logistic, laplace, normal
+    percentile: float
+        es percentile (%)
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with portfolio expected shortfall
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.es(p)
+    """
+
+    return qa_model.get_es(
+        data=portfolio_engine.portfolio_returns,
+        use_mean=use_mean,
+        distribution=distribution,
+        percentile=percentile,
+        portfolio=True,
+    )
+
+
+@log_start_end(log=logger)
+def get_omega(
+    portfolio_engine: PortfolioEngine,
+    threshold_start: float = 0,
+    threshold_end: float = 1.5,
+) -> pd.DataFrame:
+    """Get omega ratio
+
+    Parameters
+    ----------
+    portfolio_engine: PortfolioEngine
+        PortfolioEngine class instance, this will hold transactions and perform calculations.
+        Use `portfolio.load` to create a PortfolioEngine.
+    threshold_start: float
+        annualized target return threshold start of plotted threshold range
+    threshold_end: float
+        annualized target return threshold end of plotted threshold range
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with portfolio omega ratio
+
+    Examples
+    --------
+    >>> from openbb_terminal.sdk import openbb
+    >>> p = openbb.portfolio.load("openbb_terminal/miscellaneous/portfolio/holdings_example.xlsx")
+    >>> output = openbb.portfolio.om(p)
+    """
+
+    return qa_model.get_omega(
+        data=portfolio_engine.portfolio_returns,
+        threshold_start=threshold_start,
+        threshold_end=threshold_end,
+    )

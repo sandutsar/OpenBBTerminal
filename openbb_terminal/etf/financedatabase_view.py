@@ -1,10 +1,10 @@
 """Finance Database view"""
+
 __docformat__ = "numpy"
 
 import logging
 import os
-
-import pandas as pd
+from typing import Optional
 
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.etf import financedatabase_model
@@ -17,10 +17,11 @@ logger = logging.getLogger(__name__)
 @log_start_end(log=logger)
 def display_etf_by_name(
     name: str,
-    limit: int,
+    limit: int = 10,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ):
-    """Display a selection of ETFs based on name filtered by total assets. [Source: Finance Database]
+    """Display a selection of ETFs based on name. [Source: Finance Database]
 
     Parameters
     ----------
@@ -28,38 +29,45 @@ def display_etf_by_name(
         Search by name to find ETFs matching the criteria.
     limit: int
         Limit of ETFs to display
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
     export: str
         Type of format to export data
     """
     data = financedatabase_model.get_etfs_by_name(name)
-    if not data:
-        console.print("No data was found with that name\n")
+
+    if data.empty:
+        console.print("No data was found with that name.")
         return
 
-    table_data = pd.DataFrame(data).T[
-        ["long_name", "family", "category", "total_assets"]
-    ]
-    table_data_sorted = table_data.sort_values(by="total_assets", ascending=False)
-    table_data_sorted["total_assets"] = table_data_sorted["total_assets"] / 1e6
+    table_data = data[["name", "family", "category_group", "category"]]
 
     print_rich_table(
-        table_data_sorted.iloc[:limit],
+        table_data,
         show_index=True,
-        headers=["Name", "Family", "Category", "Total Assets [M]"],
-        title="ETFs by Total Assets",
+        headers=["Name", "Family", "Category Group", "Category"],
+        title="ETFs",
+        export=bool(export),
+        limit=limit,
     )
-    console.print("")
 
-    export_data(export, os.path.dirname(os.path.abspath(__file__)), "ln_fd", data)
+    export_data(
+        export,
+        os.path.dirname(os.path.abspath(__file__)),
+        "ln_fd",
+        table_data,
+        sheet_name,
+    )
 
 
 @log_start_end(log=logger)
 def display_etf_by_description(
     description: str,
-    limit: int,
+    limit: int = 10,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ):
-    """Display a selection of ETFs based on description filtered by total assets. [Source: Finance Database]
+    """Display a selection of ETFs based on description. [Source: Finance Database]
 
     Parameters
     ----------
@@ -67,38 +75,45 @@ def display_etf_by_description(
         Search by description to find ETFs matching the criteria.
     limit: int
         Limit of ETFs to display
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
     export: str
         Type of format to export data
     """
     data = financedatabase_model.get_etfs_by_description(description)
-    if not data:
-        console.print("No data was found with that description\n")
+
+    if data.empty:
+        console.print("No data was found with that description.")
         return
 
-    table_data = pd.DataFrame(data).T[
-        ["long_name", "family", "category", "total_assets"]
-    ]
-    table_data_sorted = table_data.sort_values(by="total_assets", ascending=False)
-    table_data_sorted["total_assets"] = table_data_sorted["total_assets"] / 1e6
+    table_data = data[["name", "family", "category_group", "category"]]
 
     print_rich_table(
-        table_data_sorted.iloc[:limit],
+        table_data,
         show_index=True,
-        headers=["Name", "Family", "Category", "Total Assets [M]"],
-        title="ETFs by Total Assets",
+        headers=["Name", "Family", "Category Group", "Category"],
+        title="ETFs",
+        export=bool(export),
+        limit=limit,
     )
-    console.print("")
 
-    export_data(export, os.path.dirname(os.path.abspath(__file__)), "ld", data)
+    export_data(
+        export,
+        os.path.dirname(os.path.abspath(__file__)),
+        "ld",
+        table_data,
+        sheet_name,
+    )
 
 
 @log_start_end(log=logger)
 def display_etf_by_category(
     category: str,
-    limit: int,
+    limit: int = 10,
     export: str = "",
+    sheet_name: Optional[str] = None,
 ):
-    """Display a selection of ETFs based on a category filtered by total assets. [Source: Finance Database]
+    """Display a selection of ETFs based on a category. [Source: Finance Database]
 
     Parameters
     ----------
@@ -106,31 +121,32 @@ def display_etf_by_category(
         Search by description to find ETFs matching the criteria.
     limit: int
         Limit of ETFs to display
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
     export: str
         Type of format to export data
     """
     data = financedatabase_model.get_etfs_by_category(category)
-    if not data:
-        console.print("No data was found on that category\n")
+
+    if data.empty:
+        console.print("No data was found on that category.")
         return
 
-    table_data = pd.DataFrame(data).T[
-        ["long_name", "family", "category", "total_assets"]
-    ]
-    table_data_sorted = table_data.sort_values(by="total_assets", ascending=False)
-    table_data_sorted["total_assets"] = table_data_sorted["total_assets"] / 1e6
+    table_data = data[["name", "family", "category_group", "category"]]
 
     print_rich_table(
-        table_data_sorted.iloc[:limit],
+        table_data,
         show_index=True,
-        headers=["Name", "Family", "Category", "Total Assets [M]"],
-        title="ETFs by Category and Total Assets",
+        headers=["Name", "Family", "Category Group", "Category"],
+        title="ETFs by Category",
+        export=bool(export),
+        limit=limit,
     )
-    console.print("")
 
     export_data(
         export,
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "screener"),
         "sbc",
-        data,
+        table_data,
+        sheet_name,
     )

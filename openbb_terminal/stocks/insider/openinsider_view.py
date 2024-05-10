@@ -1,14 +1,13 @@
 import itertools
 import logging
 import os
-import textwrap
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
 
+from openbb_terminal import rich_config
+from openbb_terminal.core.session.current_user import get_current_user
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.helper_funcs import (
     export_data,
@@ -19,33 +18,10 @@ from openbb_terminal.rich_config import console
 from openbb_terminal.stocks.insider.openinsider_model import (
     get_open_insider_data,
     get_open_insider_link,
+    get_print_insider_data,
 )
-from openbb_terminal import rich_config
 
 logger = logging.getLogger(__name__)
-
-d_open_insider = {
-    "lcb": "latest-cluster-buys",
-    "lpsb": "latest-penny-stock-buys",
-    "lit": "latest-insider-trading",
-    "lip": "insider-purchases",
-    "blip": "latest-insider-purchases-25k",
-    "blop": "latest-officer-purchases-25k",
-    "blcp": "latest-ceo-cfo-purchases-25k",
-    "lis": "insider-sales",
-    "blis": "latest-insider-sales-100k",
-    "blos": "latest-officer-sales-100k",
-    "blcs": "latest-ceo-cfo-sales-100k",
-    "topt": "top-officer-purchases-of-the-day",
-    "toppw": "top-officer-purchases-of-the-week",
-    "toppm": "top-officer-purchases-of-the-month",
-    "tipt": "top-insider-purchases-of-the-day",
-    "tippw": "top-insider-purchases-of-the-week",
-    "tippm": "top-insider-purchases-of-the-month",
-    "tist": "top-insider-sales-of-the-day",
-    "tispw": "top-insider-sales-of-the-week",
-    "tispm": "top-insider-sales-of-the-month",
-}
 
 d_notes = {
     "A": "A: Amended filing",
@@ -74,7 +50,7 @@ def lambda_red_highlight(values) -> List[str]:
         dataframe values to color
 
     Returns
-    ----------
+    -------
     List[str]
         colored dataframes values
     """
@@ -90,7 +66,7 @@ def lambda_yellow_highlight(values) -> List[str]:
         dataframe values to color
 
     Returns
-    ----------
+    -------
     List[str]
         colored dataframes values
     """
@@ -106,7 +82,7 @@ def lambda_magenta_highlight(values):
         dataframe values to color
 
     Returns
-    ----------
+    -------
     List[str]
         colored dataframes values
     """
@@ -122,7 +98,7 @@ def lambda_green_highlight(values):
         dataframe values to color
 
     Returns
-    ----------
+    -------
     List[str]
         colored dataframes values
     """
@@ -130,108 +106,70 @@ def lambda_green_highlight(values):
 
 
 @log_start_end(log=logger)
-def print_insider_data(type_insider: str, limit: int = 10, export: str = ""):
+def print_insider_data(
+    type_insider: str = "lcb",
+    limit: int = 10,
+    export: str = "",
+    sheet_name: Optional[str] = None,
+):
     """Print insider data
 
     Parameters
     ----------
     type_insider: str
-        Insider type of data
+        Insider type of data. Available types can be accessed through get_insider_types().
     limit: int
         Limit of data rows to display
+    sheet_name: str
+        Optionally specify the name of the sheet the data is exported to.
     export: str
         Export data format
     """
-    response = requests.get(f"http://openinsider.com/{d_open_insider[type_insider]}")
-    soup = BeautifulSoup(response.text, "html.parser")
-    table = soup.find("table", {"class": "tinytable"})
+    df = get_print_insider_data(type_insider)
 
-    if not table:
-        console.print("No insider information found", "\n")
-        return
-
-    table_rows = table.find_all("tr")
-
-    res = []
-    for tr in table_rows:
-        td = tr.find_all("td")
-        row = [tr.text.strip() for tr in td if tr.text.strip()]
-        res.append(row)
-
-    df = pd.DataFrame(res).dropna().head(n=limit)
-    columns = [
-        "X",
-        "Filing Date",
-        "Trade Date",
-        "Ticker",
-        "Company Name",
-        "Industry" if type_insider == "lcb" else "Insider Name",
-        "Title",
-        "Trade Type",
-        "Price",
-        "Qty",
-        "Owned",
-        "Diff Own",
-        "Value",
-    ]
-
-    if df.shape[1] == 13:
-        df.columns = columns
-    else:
-        df.columns = columns[1:]
-
-    df["Filing Date"] = df["Filing Date"].apply(
-        lambda x: "\n".join(textwrap.wrap(x, width=10)) if isinstance(x, str) else x
-    )
-    df["Company Name"] = df["Company Name"].apply(
-        lambda x: "\n".join(textwrap.wrap(x, width=20)) if isinstance(x, str) else x
-    )
-    df["Title"] = df["Title"].apply(
-        lambda x: "\n".join(textwrap.wrap(x, width=10)) if isinstance(x, str) else x
-    )
-    if type_insider == "lcb":
-        df["Industry"] = df["Industry"].apply(
-            lambda x: "\n".join(textwrap.wrap(x, width=20)) if isinstance(x, str) else x
-        )
-    else:
-        df["Insider Name"] = df["Insider Name"].apply(
-            lambda x: "\n".join(textwrap.wrap(x, width=20)) if isinstance(x, str) else x
+    if not df.empty:
+        print_rich_table(
+            df,
+            headers=[x.title() for x in df.columns],
+            show_index=False,
+            title="Insider Data",
+            export=bool(export),
+            limit=limit,
         )
 
-    print_rich_table(
-        df,
-        headers=[x.title() for x in df.columns],
-        show_index=False,
-        title="Insider Data",
-    )
+        export_data(
+            export,
+            os.path.dirname(os.path.abspath(__file__)),
+            type_insider,
+            df,
+            sheet_name,
+        )
 
-    export_data(export, os.path.dirname(os.path.abspath(__file__)), type_insider, df)
+        if df.shape[1] == 13:
+            l_chars = [list(chars) for chars in df["X"].values if chars != "-"]
+            l_uchars = np.unique(list(itertools.chain(*l_chars)))
 
-    if df.shape[1] == 13:
-        l_chars = [list(chars) for chars in df["X"].values]
-        l_uchars = np.unique(list(itertools.chain(*l_chars)))
-
-        for char in l_uchars:
-            console.print(d_notes[char])
-    console.print("")
+            for char in l_uchars:
+                console.print(d_notes[char])
 
 
 @log_start_end(log=logger)
 def print_insider_filter(
-    preset_loaded: str,
-    ticker: str,
+    preset: str,
+    symbol: str,
     limit: int = 10,
     links: bool = False,
     export: str = "",
-):
+    sheet_name: Optional[str] = None,
+) -> None:
     """Print insider filter based on loaded preset. [Source: OpenInsider]
 
     Parameters
     ----------
-    preset_loaded : str
+    preset : str
         Loaded preset filter
-    ticker : str
-        Stock ticker
+    symbol : str
+        Stock ticker symbol
     limit : int
         Limit of rows of data to display
     links : bool
@@ -239,16 +177,16 @@ def print_insider_filter(
     export : str
         Format to export data
     """
-    if ticker:
-        link = f"http://openinsider.com/screener?s={ticker}"
-    else:
-        link = get_open_insider_link(preset_loaded)
+    link = (
+        f"http://openinsider.com/screener?s={symbol}"
+        if symbol
+        else get_open_insider_link(preset)
+    )
 
     if not link:
-        console.print("")
         return
 
-    df_insider = get_open_insider_data(link, has_company_name=bool(not ticker))
+    df_insider = get_open_insider_data(link, has_company_name=bool(not symbol))
     df_insider_orig = df_insider.copy()
 
     if df_insider.empty:
@@ -256,69 +194,79 @@ def print_insider_filter(
         return
 
     if links:
-        df_insider = df_insider[["Ticker Link", "Insider Link", "Filing Link"]].head(
-            limit
-        )
+        df_insider = df_insider[
+            ["Ticker Link", "Insider Link", "Filing Link", "Filing Date"]
+        ].head(limit)
     else:
         df_insider = df_insider.drop(
             columns=["Filing Link", "Ticker Link", "Insider Link"]
         ).head(limit)
 
-    if rich_config.USE_COLOR and not links:
-        if not df_insider[df_insider["Trade Type"] == "S - Sale"].empty:
-            df_insider[df_insider["Trade Type"] == "S - Sale"] = df_insider[
-                df_insider["Trade Type"] == "S - Sale"
+    if (
+        rich_config.USE_COLOR
+        and not links
+        and not get_current_user().preferences.USE_INTERACTIVE_DF
+    ):
+        new_df_insider = df_insider.copy()
+        if not new_df_insider[new_df_insider["Trade Type"] == "S - Sale"].empty:
+            new_df_insider[new_df_insider["Trade Type"] == "S - Sale"] = new_df_insider[
+                new_df_insider["Trade Type"] == "S - Sale"
             ].apply(lambda_red_highlight)
-        if not df_insider[df_insider["Trade Type"] == "S - Sale+OE"].empty:
-            df_insider[df_insider["Trade Type"] == "S - Sale+OE"] = df_insider[
-                df_insider["Trade Type"] == "S - Sale+OE"
-            ].apply(lambda_yellow_highlight)
-        if not df_insider[df_insider["Trade Type"] == "F - Tax"].empty:
-            df_insider[df_insider["Trade Type"] == "F - Tax"] = df_insider[
-                df_insider["Trade Type"] == "F - Tax"
+        if not new_df_insider[new_df_insider["Trade Type"] == "S - Sale+OE"].empty:
+            new_df_insider[new_df_insider["Trade Type"] == "S - Sale+OE"] = (
+                new_df_insider[new_df_insider["Trade Type"] == "S - Sale+OE"].apply(
+                    lambda_yellow_highlight
+                )
+            )
+        if not new_df_insider[new_df_insider["Trade Type"] == "F - Tax"].empty:
+            new_df_insider[new_df_insider["Trade Type"] == "F - Tax"] = new_df_insider[
+                new_df_insider["Trade Type"] == "F - Tax"
             ].apply(lambda_magenta_highlight)
-        if not df_insider[df_insider["Trade Type"] == "P - Purchase"].empty:
-            df_insider[df_insider["Trade Type"] == "P - Purchase"] = df_insider[
-                df_insider["Trade Type"] == "P - Purchase"
-            ].apply(lambda_green_highlight)
+        if not new_df_insider[new_df_insider["Trade Type"] == "P - Purchase"].empty:
+            new_df_insider[new_df_insider["Trade Type"] == "P - Purchase"] = (
+                new_df_insider[new_df_insider["Trade Type"] == "P - Purchase"].apply(
+                    lambda_green_highlight
+                )
+            )
 
         patch_pandas_text_adjustment()
         pd.set_option("display.max_colwidth", 0)
         pd.set_option("display.max_rows", None)
 
         # needs to be done because table is too large :(
-        df_insider = df_insider.drop(columns=["Filing Date", "Trade Type"])
+        new_df_insider = new_df_insider.drop(columns=["Filing Date", "Trade Type"])
 
     else:
         # needs to be done because table is too large :(
-        df_insider = df_insider.drop(columns=["Filing Date"])
+        new_df_insider = df_insider.drop(columns=["Filing Date"], axis=1)
 
-    console.print("")
     print_rich_table(
-        df_insider,
-        headers=[x.title() for x in df_insider.columns],
+        new_df_insider,
+        headers=[x.title() for x in new_df_insider.columns],
         title="Insider filtered",
+        export=bool(export),
     )
-
-    if export:
-        if preset_loaded:
-            cmd = "filter"
-        if ticker:
-            cmd = "lis"
-
-        export_data(export, os.path.dirname(os.path.abspath(__file__)), cmd, df_insider)
 
     if not links:
         l_chars = [list(chars) for chars in df_insider_orig["X"].values]
         l_uchars = np.unique(list(itertools.chain(*l_chars)))
-        console.print("")
+
         for char in l_uchars:
             console.print(d_notes[char])
 
         l_tradetype = df_insider_orig["Trade Type"].values
         l_utradetype = np.unique(l_tradetype)
-        console.print("")
+
         for tradetype in l_utradetype:
             console.print(d_trade_types[tradetype])
 
-    console.print("")
+    if export:
+        cmd = "stats" if symbol else "filter"
+
+        export_data(
+            export,
+            os.path.dirname(os.path.abspath(__file__)),
+            cmd,
+            df_insider,
+            sheet_name,
+        )

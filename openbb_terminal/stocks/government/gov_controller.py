@@ -1,23 +1,22 @@
 """ Government Controller Module """
+
 __docformat__ = "numpy"
 
 import argparse
 import logging
-from typing import List
+from typing import List, Optional
 
-from prompt_toolkit.completion import NestedCompleter
-
-from openbb_terminal import feature_flags as obbff
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.custom_prompt_toolkit import NestedCompleter
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.helper_funcs import (
     EXPORT_BOTH_RAW_DATA_AND_FIGURES,
     EXPORT_ONLY_RAW_DATA_ALLOWED,
     check_positive,
-    parse_known_args_and_warn,
 )
 from openbb_terminal.menu import session
 from openbb_terminal.parent_classes import StockBaseController
-from openbb_terminal.rich_config import console
+from openbb_terminal.rich_config import MenuText, console
 from openbb_terminal.stocks.government import quiverquant_view
 
 logger = logging.getLogger(__name__)
@@ -43,53 +42,43 @@ class GovController(StockBaseController):
     gov_type_choices = ["congress", "senate", "house"]
     analysis_choices = ["total", "upmom", "downmom"]
     PATH = "/stocks/gov/"
+    CHOICES_GENERATION = True
 
     def __init__(
         self,
         ticker: str,
-        queue: List[str] = None,
+        queue: Optional[List[str]] = None,
     ):
         """Constructor"""
         super().__init__(queue)
 
         self.ticker = ticker
 
-        if session and obbff.USE_PROMPT_TOOLKIT:
-            choices: dict = {c: {} for c in self.controller_choices}
-            choices["lasttrades"] = {c: {} for c in self.gov_type_choices}
-            choices["topbuys"] = {c: {} for c in self.gov_type_choices}
-            choices["topsells"] = {c: {} for c in self.gov_type_choices}
-            choices["qtrcontracts"]["-a"] = {c: {} for c in self.analysis_choices}
-            choices["qtrcontracts"]["--analysis"] = {
-                c: {} for c in self.analysis_choices
-            }
+        if session and get_current_user().preferences.USE_PROMPT_TOOLKIT:
+            choices: dict = self.choices_default
+
             self.completer = NestedCompleter.from_nested_dict(choices)
 
     def print_help(self):
         """Print help"""
-        has_ticker_start = "[unvl]" if not self.ticker else ""
-        has_ticker_end = "[/unvl]" if not self.ticker else ""
-        help_text = f"""
-[src][QuiverQuant][/src]
-
-[info]Explore:[/info][cmds]
-    lasttrades           last trades
-    topbuys              show most purchased stocks
-    topsells             show most sold stocks
-    lastcontracts        show last government contracts given out
-    qtrcontracts         quarterly government contracts analysis
-    toplobbying          top corporate lobbying tickers
-
-    load                 load a specific ticker for analysis[/cmds]
-
-[param]Ticker: [/param]{self.ticker or None}{has_ticker_start}[cmds]
-
-    gtrades              show government trades for ticker
-    contracts            show government contracts for ticker
-    histcont             show historical quarterly government contracts for ticker
-    lobbying             corporate lobbying details for ticker[/cmds]{has_ticker_end}
-            """
-        console.print(text=help_text, menu="Stocks - Screener")
+        mt = MenuText("stocks/gov/", 80)
+        mt.add_info("_explore")
+        mt.add_cmd("lasttrades")
+        mt.add_cmd("topbuys")
+        mt.add_cmd("topsells")
+        mt.add_cmd("lastcontracts")
+        mt.add_cmd("qtrcontracts")
+        mt.add_cmd("toplobbying")
+        mt.add_raw("\n")
+        mt.add_cmd("load")
+        mt.add_raw("\n")
+        mt.add_param("_ticker", self.ticker or "")
+        mt.add_raw("\n")
+        mt.add_cmd("gtrades", self.ticker)
+        mt.add_cmd("contracts", self.ticker)
+        mt.add_cmd("histcont", self.ticker)
+        mt.add_cmd("lobbying", self.ticker)
+        console.print(text=mt.menu_text, menu="Stocks - Government")
 
     def custom_reset(self):
         """Class specific component of reset command"""
@@ -104,7 +93,7 @@ class GovController(StockBaseController):
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             prog="lasttrades",
-            description="Last government trading trading. [Source: www.quiverquant.com]",
+            description="Last government trades. [Source: www.quiverquant.com]",
         )
         parser.add_argument(
             "-g",
@@ -134,15 +123,18 @@ class GovController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-g")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
             quiverquant_view.display_last_government(
                 gov_type=ns_parser.gov,
-                past_days=ns_parser.past_transactions_days,
+                limit=ns_parser.past_transactions_days,
                 representative=ns_parser.representative,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -189,16 +181,19 @@ class GovController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-g")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             quiverquant_view.display_government_buys(
                 gov_type=ns_parser.gov,
                 past_transactions_months=ns_parser.past_transactions_months,
-                num=ns_parser.limit,
+                limit=ns_parser.limit,
                 raw=ns_parser.raw,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -245,16 +240,19 @@ class GovController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-g")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             quiverquant_view.display_government_sells(
                 gov_type=ns_parser.gov,
                 past_transactions_months=ns_parser.past_transactions_months,
-                num=ns_parser.limit,
+                limit=ns_parser.limit,
                 raw=ns_parser.raw,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -294,15 +292,18 @@ class GovController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             quiverquant_view.display_last_contracts(
                 past_transaction_days=ns_parser.past_transaction_days,
-                num=ns_parser.limit,
+                limit=ns_parser.limit,
                 sum_contracts=ns_parser.sum,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -343,15 +344,18 @@ class GovController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             quiverquant_view.display_qtr_contracts(
                 analysis=ns_parser.analysis,
-                num=ns_parser.limit,
+                limit=ns_parser.limit,
                 raw=ns_parser.raw,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -379,12 +383,12 @@ class GovController(StockBaseController):
             dest="raw",
             help="Print raw data.",
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             quiverquant_view.display_top_lobbying(
-                num=ns_parser.limit, raw=ns_parser.raw, export=ns_parser.export
+                limit=ns_parser.limit, raw=ns_parser.raw, export=ns_parser.export
             )
 
     @log_start_end(log=logger)
@@ -422,17 +426,20 @@ class GovController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-g")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             if self.ticker:
                 quiverquant_view.display_government_trading(
-                    ticker=self.ticker,
+                    symbol=self.ticker,
                     gov_type=ns_parser.gov,
                     past_transactions_months=ns_parser.past_transactions_months,
                     raw=ns_parser.raw,
                     export=ns_parser.export,
+                    sheet_name=(
+                        " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                    ),
                 )
             else:
                 console.print("No ticker loaded. Use `load <ticker>` first.\n")
@@ -464,16 +471,19 @@ class GovController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-p")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             if self.ticker:
                 quiverquant_view.display_contracts(
-                    ticker=self.ticker,
+                    symbol=self.ticker,
                     past_transaction_days=ns_parser.past_transaction_days,
                     raw=ns_parser.raw,
                     export=ns_parser.export,
+                    sheet_name=(
+                        " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                    ),
                 )
             else:
                 console.print("No ticker loaded. Use `load <ticker>` first.\n")
@@ -494,13 +504,13 @@ class GovController(StockBaseController):
             dest="raw",
             help="Print raw data.",
         )
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, export_allowed=EXPORT_BOTH_RAW_DATA_AND_FIGURES
         )
         if ns_parser:
             if self.ticker:
                 quiverquant_view.display_hist_contracts(
-                    ticker=self.ticker, raw=ns_parser.raw, export=ns_parser.export
+                    symbol=self.ticker, raw=ns_parser.raw, export=ns_parser.export
                 )
             else:
                 console.print("No ticker loaded. Use `load <ticker>` first.\n")
@@ -525,12 +535,12 @@ class GovController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
             if self.ticker:
                 quiverquant_view.display_lobbying(
-                    ticker=self.ticker,
-                    num=ns_parser.limit,
+                    symbol=self.ticker,
+                    limit=ns_parser.limit,
                 )
             else:
                 console.print("No ticker loaded. Use `load <ticker>` first.\n")

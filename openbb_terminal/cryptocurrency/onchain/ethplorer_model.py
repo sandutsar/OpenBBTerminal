@@ -1,4 +1,5 @@
 """Ethplorer model"""
+
 __docformat__ = "numpy"
 
 import logging
@@ -8,12 +9,12 @@ from time import sleep
 from typing import Any, Optional
 
 import pandas as pd
-import requests
 
-import openbb_terminal.config_terminal as cfg
-from openbb_terminal.rich_config import console
+from openbb_terminal.core.session.current_user import get_current_user
 from openbb_terminal.cryptocurrency.dataframe_helpers import create_df_index
 from openbb_terminal.decorators import log_start_end
+from openbb_terminal.helper_funcs import request
+from openbb_terminal.rich_config import console
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ def split_cols_with_dot(column: str) -> str:
 
     Returns
     -------
-    str:
+    str
         Value of column with replaced format.
     """
 
@@ -86,9 +87,9 @@ def split_cols_with_dot(column: str) -> str:
             Index of string element.
 
         Returns
-        -------
-        str:
-            Camel case string with removed dots. E.g. price.availableSupply -> priceAvailableSupply.
+        ----------
+        str
+            Camel case string with no dots. E.g. price.availableSupply -> priceAvailableSupply.
         """
 
         return string[:index] + char + string[index + 1 :]
@@ -102,8 +103,8 @@ def split_cols_with_dot(column: str) -> str:
 
 @log_start_end(log=logger)
 def enrich_social_media(dct: dict) -> None:
-    """Searching inside dictionary if there are any information about twitter, reddit or coingecko. If yes it
-    updates dictionary with url to given social media site.
+    """Searching inside dictionary if there are any information about twitter, reddit or coingecko.
+    If yes it updates dictionary with url to given social media site.
 
     Parameters
     ----------
@@ -131,7 +132,7 @@ def make_request(
     Parameters
     ----------
     endpoint: str
-        endpoint which we want to query e.g. https://api.ethplorer.io/<endpoint><arg>?=apiKey=freekey
+        endpoint we want to query e.g. https://api.ethplorer.io/<endpoint><arg>?=apiKey=freekey
     address: str
         balance argument for given endpoint. In most cases it's tx hash, or eth balance.
     kwargs: Any
@@ -139,8 +140,8 @@ def make_request(
 
     Returns
     -------
-    dict
-    dictionary with response data
+    Optional[dict]
+        dictionary with response data
     """
 
     base_url = "https://api.ethplorer.io/"
@@ -149,19 +150,19 @@ def make_request(
     if address:
         url = url + "/" + address
 
-    url += f"?apiKey={cfg.API_ETHPLORER_KEY}"
+    url += f"?apiKey={get_current_user().credentials.API_ETHPLORER_KEY}"
 
     if "limit" in kwargs:
         url += f"&limit={kwargs['limit']}"
 
     sleep(0.5)  # Limit is 2 API calls per 1 sec.
-    response = requests.get(url)
+    response = request(url)
     result = {}
 
     if response.status_code == 200:
         result = response.json()
 
-        if result:
+        if not result:
             console.print("No data found")
 
     elif response.status_code == 401:
@@ -183,8 +184,8 @@ def get_token_decimals(address: str) -> Optional[int]:
 
     Returns
     -------
-    pd.DataFrame:
-        DataFrame with list of tokens and their balances.
+    Optional[int]
+        Number of decimals for given token.
     """
     response = make_request("getTokenInfo", address)
     if response and "decimals" in response:
@@ -193,7 +194,9 @@ def get_token_decimals(address: str) -> Optional[int]:
 
 
 @log_start_end(log=logger)
-def get_address_info(address: str) -> pd.DataFrame:
+def get_address_info(
+    address: str, sortby: str = "index", ascend: bool = False
+) -> pd.DataFrame:
     """Get info about tokens on you ethereum blockchain balance. Eth balance, balance of all tokens which
     have name and symbol. [Source: Ethplorer]
 
@@ -201,18 +204,21 @@ def get_address_info(address: str) -> pd.DataFrame:
     ----------
     address: str
         Blockchain balance e.g. 0x3cD751E6b0078Be393132286c442345e5DC49699
+    sortby: str
+        Key to sort by.
+    ascend: str
+        Sort in descending order.
 
     Returns
     -------
-    pd.DataFrame:
+    pd.DataFrame
         DataFrame with list of tokens and their balances.
     """
 
     response = make_request("getAddressInfo", address)
-
+    tokens = []
     if "tokens" in response:
         tokens = response.pop("tokens")
-
         for token in tokens:
             token_info = token.pop("tokenInfo")
             token.update(
@@ -224,7 +230,7 @@ def get_address_info(address: str) -> pd.DataFrame:
                     / (10 ** int(token_info.get("decimals"))),
                 }
             )
-    else:
+    elif "token_info" in response:
         token_info = response.get("tokenInfo") or {}
         tokens = [
             {
@@ -236,7 +242,7 @@ def get_address_info(address: str) -> pd.DataFrame:
             }
         ]
 
-    eth = response["ETH"] or {}
+    eth = response.get("ETH") or {}
     eth_balance = eth.get("balance")
     eth_row = [
         "Ethereum",
@@ -244,28 +250,35 @@ def get_address_info(address: str) -> pd.DataFrame:
         "0x0000000000000000000000000000000000000000",
         eth_balance,
     ]
-
     cols = [
         "tokenName",
         "tokenSymbol",
         "tokenAddress",
         "balance",
     ]
-    df = pd.DataFrame(tokens)[cols]
+    df = pd.DataFrame(tokens)
     eth_row_df = pd.DataFrame([eth_row], columns=cols)
     df = pd.concat([eth_row_df, df], ignore_index=True)
-    df = df[df["tokenName"].notna()]
+    df = df[df["tokenName"].notna()][cols]
     create_df_index(df, "index")
+    df = df.sort_values(by=sortby, ascending=ascend)
     return df
 
 
 @log_start_end(log=logger)
-def get_top_tokens() -> pd.DataFrame:
+def get_top_tokens(sortby: str = "rank", ascend: bool = False) -> pd.DataFrame:
     """Get top 50 tokens. [Source: Ethplorer]
+
+    Parameters
+    ----------
+    sortby: str
+        Key to sort by.
+    ascend: str
+        Sort in descending order.
 
     Returns
     -------
-    pd.DataFrame:
+    pd.DataFrame
         DataFrame with list of top 50 tokens.
     """
 
@@ -285,21 +298,28 @@ def get_top_tokens() -> pd.DataFrame:
     ]
     df["price"] = df["price"].apply(lambda x: x["rate"] if x and "rate" in x else None)
     create_df_index(df, "rank")
+    df = df.sort_values(by=sortby, ascending=ascend)
     return df
 
 
 @log_start_end(log=logger)
-def get_top_token_holders(address) -> pd.DataFrame:
+def get_top_token_holders(
+    address: str, sortby: str = "balance", ascend: bool = True
+) -> pd.DataFrame:
     """Get info about top token holders. [Source: Ethplorer]
 
     Parameters
     ----------
     address: str
         Token balance e.g. 0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984
+    sortby: str
+        Key to sort by.
+    ascend: str
+        Sort in descending order.
 
     Returns
     -------
-    pd.DataFrame:
+    pd.DataFrame
         DataFrame with list of top token holders.
     """
 
@@ -309,21 +329,28 @@ def get_top_token_holders(address) -> pd.DataFrame:
     token_decimals_divider = get_token_decimals(address)
     if token_decimals_divider:
         df["balance"] = df["balance"] / token_decimals_divider
+    df = df.sort_values(by=sortby, ascending=ascend)
     return df
 
 
 @log_start_end(log=logger)
-def get_address_history(address) -> pd.DataFrame:
+def get_address_history(
+    address: str, sortby: str = "timestamp", ascend: bool = True
+) -> pd.DataFrame:
     """Get information about balance historical transactions. [Source: Ethplorer]
 
     Parameters
     ----------
     address: str
         Blockchain balance e.g. 0x3cD751E6b0078Be393132286c442345e5DC49699
+    sortby: str
+        Key to sort by.
+    ascend: str
+        Sort in ascending order.
 
     Returns
     -------
-    pd.DataFrame:
+    pd.DataFrame
         DataFrame with balance historical transactions (last 100)
     """
     response = make_request("getAddressHistory", address, limit=100)
@@ -345,7 +372,9 @@ def get_address_history(address) -> pd.DataFrame:
         console.print(f"No historical transaction found for {address}")
         return pd.DataFrame(columns=cols)
 
-    return df[cols]
+    df = df[cols]
+    df = df.sort_values(by=sortby, ascending=ascend)
+    return df
 
 
 @log_start_end(log=logger)
@@ -359,7 +388,7 @@ def get_token_info(address) -> pd.DataFrame:
 
     Returns
     -------
-    pd.DataFrame:
+    pd.DataFrame
         DataFrame with information about provided ERC20 token.
     """
 
@@ -413,7 +442,7 @@ def get_token_info(address) -> pd.DataFrame:
 
 
 @log_start_end(log=logger)
-def get_tx_info(tx_hash) -> pd.DataFrame:
+def get_tx_info(tx_hash: str) -> pd.DataFrame:
     """Get info about transaction. [Source: Ethplorer]
 
     Parameters
@@ -423,7 +452,7 @@ def get_tx_info(tx_hash) -> pd.DataFrame:
 
     Returns
     -------
-    pd.DataFrame:
+    pd.DataFrame
         DataFrame with information about ERC20 token transaction.
     """
     decimals = None
@@ -458,17 +487,23 @@ def get_tx_info(tx_hash) -> pd.DataFrame:
 
 
 @log_start_end(log=logger)
-def get_token_history(address) -> pd.DataFrame:
+def get_token_history(
+    address: str, sortby: str = "timestamp", ascend: bool = False
+) -> pd.DataFrame:
     """Get info about token historical transactions. [Source: Ethplorer]
 
     Parameters
     ----------
     address: str
         Token e.g. 0xf3db5fa2c66b7af3eb0c0b782510816cbe4813b8
+    sortby: str
+        Key to sort by.
+    ascend: str
+        Sort in descending order.
 
     Returns
     -------
-    pd.DataFrame:
+    pd.DataFrame
         DataFrame with token historical transactions.
     """
 
@@ -502,21 +537,31 @@ def get_token_history(address) -> pd.DataFrame:
 
     df[["name", "symbol"]] = name, symbol
     df["value"] = df["value"].astype(float) / (10 ** int(decimals))
-    return df[["timestamp", "name", "symbol", "value", "from", "to", "transactionHash"]]
+    df = df[["timestamp", "name", "symbol", "value", "from", "to", "transactionHash"]]
+    df = df.sort_values(by=sortby, ascending=ascend)
+    return df
 
 
 @log_start_end(log=logger)
-def get_token_historical_price(address) -> pd.DataFrame:
+def get_token_historical_price(
+    address: str,
+    sortby: str = "date",
+    ascend: bool = False,
+) -> pd.DataFrame:
     """Get token historical prices with volume and market cap, and average price. [Source: Ethplorer]
 
     Parameters
     ----------
     address: str
         Token e.g. 0xf3db5fa2c66b7af3eb0c0b782510816cbe4813b8
+    sortby: str
+        Key to sort by.
+    ascend: str
+        Sort in descending order.
 
     Returns
     -------
-    pd.DataFrame:
+    pd.DataFrame
         DataFrame with token historical prices.
     """
 
@@ -532,8 +577,11 @@ def get_token_historical_price(address) -> pd.DataFrame:
 
     prices_df = pd.DataFrame(prices)
     prices_df["ts"] = prices_df["ts"].apply(lambda x: datetime.fromtimestamp(x))
-    prices_df.drop("tmp", axis=1, inplace=True)
+    if "tmp" in prices_df.columns:
+        prices_df.drop("tmp", axis=1, inplace=True)
 
-    return prices_df[
+    df = prices_df[
         ["date", "open", "close", "high", "low", "volumeConverted", "cap", "average"]
     ]
+    df = df.sort_values(by=sortby, ascending=ascend)
+    return df

@@ -1,18 +1,16 @@
 """ FINRA View """
+
 __docformat__ = "numpy"
 
 import logging
 import os
-from typing import List, Optional
+from typing import List, Optional, Union
 
-import matplotlib.dates as mdates
 import pandas as pd
-from matplotlib import pyplot as plt
 
-from openbb_terminal.config_terminal import theme
-from openbb_terminal.config_plot import PLOT_DPI
+from openbb_terminal import OpenBBFigure
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_funcs import export_data, plot_autoscale
+from openbb_terminal.helper_funcs import export_data
 from openbb_terminal.rich_config import console
 from openbb_terminal.stocks.dark_pool_shorts import finra_model
 
@@ -20,226 +18,243 @@ logger = logging.getLogger(__name__)
 
 
 @log_start_end(log=logger)
-def plot_dark_pools(
-    ticker: str,
-    ats: pd.DataFrame,
-    otc: pd.DataFrame,
-    external_axes: Optional[List[plt.Axes]] = None,
-):
-    """Plots ATS and NON-ATS data
-
-    Parameters
-    ----------
-    ticker : str
-        Stock ticker to get data from
-    ats : pd.DataFrame
-        Dark Pools (ATS) Data
-    otc : pd.DataFrame
-        OTC (Non-ATS) Data
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (2 axis is expected in the list), by default None
-
-    """
-
-    # This plot has 1 axis
-    if not external_axes:
-        _, (ax1, ax2) = plt.subplots(
-            2, 1, sharex=True, figsize=plot_autoscale(), dpi=PLOT_DPI
-        )
-    else:
-        if len(external_axes) != 1:
-            logger.error("Expected list of one axis item.")
-            console.print("[red]Expected list of one axis item./n[/red]")
-            return
-        (ax1, ax2) = external_axes
-
-    if not ats.empty and not otc.empty:
-        ax1.bar(
-            ats.index,
-            (ats["totalWeeklyShareQuantity"] + otc["totalWeeklyShareQuantity"])
-            / 1_000_000,
-            color=theme.down_color,
-        )
-        ax1.bar(
-            otc.index, otc["totalWeeklyShareQuantity"] / 1_000_000, color=theme.up_color
-        )
-        ax1.legend(["ATS", "OTC"])
-
-    elif not ats.empty:
-        ax1.bar(
-            ats.index,
-            ats["totalWeeklyShareQuantity"] / 1_000_000,
-            color=theme.down_color,
-        )
-        ax1.legend(["ATS"])
-
-    elif not otc.empty:
-        ax1.bar(
-            otc.index, otc["totalWeeklyShareQuantity"] / 1_000_000, color=theme.up_color
-        )
-        ax1.legend(["OTC"])
-
-    ax1.set_ylabel("Total Weekly Shares [Million]")
-    ax1.set_title(f"Dark Pools (ATS) vs OTC (Non-ATS) Data for {ticker}")
-
-    if not ats.empty:
-        ax2.plot(
-            ats.index,
-            ats["totalWeeklyShareQuantity"] / ats["totalWeeklyTradeCount"],
-            color=theme.down_color,
-        )
-        ax2.legend(["ATS"])
-
-        if not otc.empty:
-            ax2.plot(
-                otc.index,
-                otc["totalWeeklyShareQuantity"] / otc["totalWeeklyTradeCount"],
-                color=theme.up_color,
-            )
-            ax2.legend(["ATS", "OTC"])
-
-    else:
-        ax2.plot(
-            otc.index,
-            otc["totalWeeklyShareQuantity"] / otc["totalWeeklyTradeCount"],
-            color=theme.up_color,
-        )
-        ax2.legend(["OTC"])
-
-    ax2.set_ylabel("Shares per Trade")
-    ax2.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
-    ax2.xaxis.set_major_locator(mdates.DayLocator(interval=4))
-    ax2.set_xlim(otc.index[0], otc.index[-1])
-    ax2.set_xlabel("Weeks")
-
-    theme.style_primary_axis(ax1)
-    theme.style_primary_axis(ax2)
-
-    if not external_axes:
-        theme.visualize_output()
-
-
-@log_start_end(log=logger)
-def darkpool_ats_otc(ticker: str, export: str):
+def darkpool_ats_otc(
+    symbol: str,
+    export: str = "",
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
     """Display barchart of dark pool (ATS) and OTC (Non ATS) data. [Source: FINRA]
 
     Parameters
     ----------
-    ticker : str
+    symbol : str
         Stock ticker
     export : str
         Export dataframe data to csv,json,xlsx file
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
-    df_ats, df_otc = finra_model.getTickerFINRAdata(ticker)
 
-    if df_ats.empty and df_otc.empty:
-        console.print("No ticker data found!")
+    ats, otc = finra_model.getTickerFINRAdata(symbol)
+    if ats.empty:
+        return console.print("[red]Could not get data[/red]\n")
 
-    plot_dark_pools(ticker, df_ats, df_otc)
-    console.print("")
+    if ats.empty and otc.empty:
+        return console.print("No ticker data found!")
+
+    fig = OpenBBFigure.create_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        row_width=[0.4, 0.6],
+        specs=[[{"secondary_y": True}], [{"secondary_y": False}]],
+    )
+
+    if not ats.empty and not otc.empty:
+        fig.add_bar(
+            x=ats.index,
+            y=(ats["totalWeeklyShareQuantity"] + otc["totalWeeklyShareQuantity"]),
+            name="ATS",
+            opacity=0.8,
+            row=1,
+            col=1,
+            secondary_y=False,
+        )
+        fig.add_bar(
+            x=otc.index,
+            y=otc["totalWeeklyShareQuantity"],
+            name="OTC",
+            opacity=0.8,
+            yaxis="y2",
+            offset=0.0001,
+            row=1,
+            col=1,
+        )
+
+    elif not ats.empty:
+        fig.add_bar(
+            x=ats.index,
+            y=(ats["totalWeeklyShareQuantity"] + otc["totalWeeklyShareQuantity"]),
+            name="ATS",
+            opacity=0.8,
+            row=1,
+            col=1,
+            secondary_y=False,
+        )
+
+    elif not otc.empty:
+        fig.add_bar(
+            x=otc.index,
+            y=otc["totalWeeklyShareQuantity"],
+            name="OTC",
+            opacity=0.8,
+            yaxis="y2",
+            secondary_y=False,
+            row=1,
+            col=1,
+        )
+
+    if not ats.empty:
+        fig.add_scatter(
+            name="ATS",
+            x=ats.index,
+            y=ats["totalWeeklyShareQuantity"] / ats["totalWeeklyTradeCount"],
+            line=dict(color="#fdc708", width=2),
+            opacity=1,
+            yaxis="y2",
+            row=2,
+            col=1,
+        )
+
+        if not otc.empty:
+            fig.add_scatter(
+                name="OTC",
+                x=otc.index,
+                y=otc["totalWeeklyShareQuantity"] / otc["totalWeeklyTradeCount"],
+                line=dict(color="#d81aea", width=2),
+                opacity=1,
+                row=2,
+                col=1,
+            )
+    else:
+        fig.add_scatter(
+            name="OTC",
+            x=otc.index,
+            y=otc["totalWeeklyShareQuantity"] / otc["totalWeeklyTradeCount"],
+            line=dict(color="#d81aea", width=2),
+            opacity=1,
+            row=2,
+            col=1,
+        )
+
+    fig.update_layout(
+        margin=dict(t=30),
+        title=f"<b>Dark Pools (ATS) vs OTC (Non-ATS) Data for {symbol}</b>",
+        title_font_size=14,
+        yaxis3_title="Shares per Trade",
+        yaxis_title="Total Weekly Shares",
+        xaxis2_title="Weeks",
+        yaxis=dict(fixedrange=False, nticks=20),
+        yaxis2=dict(
+            fixedrange=False,
+            showgrid=False,
+            overlaying="y",
+            anchor="x",
+            layer="above traces",
+            title_standoff=0,
+        ),
+        yaxis3=dict(fixedrange=False, nticks=10),
+        xaxis=dict(
+            rangeslider=dict(visible=False), type="date", showspikes=True, nticks=20
+        ),
+        barmode="group",
+        bargap=0.5,
+        bargroupgap=0,
+        hovermode="x unified",
+        spikedistance=1,
+        hoverdistance=1,
+    )
 
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "dpotc_ats",
-        df_ats,
+        ats,
+        sheet_name,
     )
     export_data(
         export,
         os.path.dirname(os.path.abspath(__file__)),
         "dpotc_otc",
-        df_otc,
+        otc,
+        sheet_name,
+        fig,
     )
+
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
 def plot_dark_pools_ats(
-    ats: pd.DataFrame,
-    top_ats_tickers: List,
-    external_axes: Optional[List[plt.Axes]] = None,
-):
+    data: pd.DataFrame, symbols: List, external_axes: bool = False
+) -> Union[OpenBBFigure, None]:
     """Plots promising tickers based on growing ATS data
 
     Parameters
     ----------
-    ats : pd.DataFrame
+    data: pd.DataFrame
         Dark Pools (ATS) Data
-    top_ats_tickers : List
+    symbols: List
         List of tickers from most promising with better linear regression slope
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (1 axis is expected in the list), by default None
+    external_axes: bool, optional
+        Whether to return the figure object or not, by default False
 
     """
 
-    # This plot has 1 axis
-    if not external_axes:
-        _, ax = plt.subplots(figsize=plot_autoscale(), dpi=PLOT_DPI)
-    else:
-        if len(external_axes) != 1:
-            logger.error("Expected list of one axis item.")
-            console.print("[red]Expected list of one axis item./n[/red]")
-            return
-        (ax,) = external_axes
+    fig = OpenBBFigure(xaxis_title="Weeks", yaxis_title="Total Weekly Shares")
+    fig.set_title("Dark Pool (ATS) growing tickers")
 
-    for symbol in top_ats_tickers:
-        ax.plot(
-            pd.to_datetime(
-                ats[ats["issueSymbolIdentifier"] == symbol]["weekStartDate"]
+    for symbol in symbols:
+        fig.add_scatter(
+            x=pd.to_datetime(
+                data[data["issueSymbolIdentifier"] == symbol]["weekStartDate"]
             ),
-            ats[ats["issueSymbolIdentifier"] == symbol]["totalWeeklyShareQuantity"]
-            / 1_000_000,
+            y=data[data["issueSymbolIdentifier"] == symbol]["totalWeeklyShareQuantity"],
+            name=symbol,
+            mode="lines",
         )
 
-    ax.legend(top_ats_tickers)
-    ax.set_ylabel("Total Weekly Shares [Million]")
-    ax.set_title("Dark Pool (ATS) growing tickers")
-    ax.set_xlabel("Weeks")
-    ats["weekStartDate"] = pd.to_datetime(ats["weekStartDate"])
-    ax.set_xlim(ats["weekStartDate"].iloc[0], ats["weekStartDate"].iloc[-1])
-    theme.style_primary_axis(ax)
-
-    if not external_axes:
-        theme.visualize_output()
+    return fig.show(external=external_axes)
 
 
 @log_start_end(log=logger)
 def darkpool_otc(
-    num: int,
-    promising: int,
-    tier: str,
-    export: str,
-    external_axes: Optional[List[plt.Axes]] = None,
-):
+    input_limit: int = 1000,
+    limit: int = 10,
+    tier: str = "T1",
+    export: str = "",
+    sheet_name: Optional[str] = None,
+    external_axes: bool = False,
+) -> Union[OpenBBFigure, None]:
     """Display dark pool (ATS) data of tickers with growing trades activity. [Source: FINRA]
 
     Parameters
     ----------
-    num : int
+    input_limit : int
         Number of tickers to filter from entire ATS data based on
         the sum of the total weekly shares quantity
-    promising : int
+    limit : int
         Number of tickers to display from most promising with
         better linear regression slope
-    tier : int
-        Tier to process data from
+    tier : str
+        Tier to process data from: T1, T2 or OTCE
     export : str
         Export dataframe data to csv,json,xlsx file
-    external_axes : Optional[List[plt.Axes]], optional
-        External axes (1 axis is expected in the list), by default None
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     """
     # TODO: Improve command logic to be faster and more useful
-    df_ats, d_ats_reg = finra_model.getATSdata(num, tier)
+    df_ats, d_ats_reg = finra_model.getATSdata(input_limit, tier)
 
-    top_ats_tickers = list(
-        dict(sorted(d_ats_reg.items(), key=lambda item: item[1], reverse=True)).keys()
-    )[:promising]
+    if not df_ats.empty and d_ats_reg:
+        symbols = list(
+            dict(
+                sorted(d_ats_reg.items(), key=lambda item: item[1], reverse=True)
+            ).keys()
+        )[:limit]
 
-    plot_dark_pools_ats(df_ats, top_ats_tickers, external_axes)
-    console.print("")
+        fig = plot_dark_pools_ats(df_ats, symbols, True)
 
-    export_data(
-        export,
-        os.path.dirname(os.path.abspath(__file__)),
-        "prom",
-        df_ats,
-    )
+        export_data(
+            export,
+            os.path.dirname(os.path.abspath(__file__)),
+            "prom",
+            df_ats,
+            sheet_name,
+            fig,
+        )
+        return fig.show(external=external_axes)
+
+    return console.print("[red]Could not get data[/red]\n")

@@ -1,19 +1,19 @@
 import configparser
 import logging
-import os
+import textwrap
 from datetime import datetime
 from typing import Dict, List
 
 import pandas as pd
-import requests
 from bs4 import BeautifulSoup
 
+from openbb_terminal.core.config.paths import MISCELLANEOUS_DIRECTORY
+from openbb_terminal.core.session.current_user import get_current_user
 from openbb_terminal.decorators import log_start_end
+from openbb_terminal.helper_funcs import request
 from openbb_terminal.rich_config import console
 
 logger = logging.getLogger(__name__)
-
-presets_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), "presets/")
 
 
 # pylint: disable=too-many-branches,line-too-long,C0302
@@ -530,6 +530,28 @@ d_SectorSubsectorIndustry = {
     "Services -> Miscellaneous Services": "sic1=70&sic2=89&sicl=8900&sich=9720",
     "Closed-End Funds": "sic1=0&sicl=0&sich=99",
 }
+d_open_insider = {
+    "lcb": "latest-cluster-buys",
+    "lpsb": "latest-penny-stock-buys",
+    "lit": "latest-insider-trading",
+    "lip": "insider-purchases",
+    "blip": "latest-insider-purchases-25k",
+    "blop": "latest-officer-purchases-25k",
+    "blcp": "latest-ceo-cfo-purchases-25k",
+    "lis": "insider-sales",
+    "blis": "latest-insider-sales-100k",
+    "blos": "latest-officer-sales-100k",
+    "blcs": "latest-ceo-cfo-sales-100k",
+    "topt": "top-officer-purchases-of-the-day",
+    "toppw": "top-officer-purchases-of-the-week",
+    "toppm": "top-officer-purchases-of-the-month",
+    "tipt": "top-insider-purchases-of-the-day",
+    "tippw": "top-insider-purchases-of-the-week",
+    "tippm": "top-insider-purchases-of-the-month",
+    "tist": "top-insider-sales-of-the-day",
+    "tispw": "top-insider-sales-of-the-week",
+    "tispm": "top-insider-sales-of-the-month",
+}
 
 
 @log_start_end(log=logger)
@@ -552,7 +574,7 @@ def check_valid_range(
         max value to allow
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -584,7 +606,7 @@ def check_dates(d_date: Dict) -> str:
         dictionary with dates from open insider
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -659,7 +681,7 @@ def check_valid_multiple(category: str, field: str, val: str, multiple: int) -> 
         value must be multiple of this number
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -691,7 +713,7 @@ def check_boolean_list(category: str, d_data: Dict, l_fields_to_check: List) -> 
         list of fields from data dictionary to check if they are bool
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -722,7 +744,7 @@ def check_in_list(
         list of possible values that should be allowed
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -756,7 +778,7 @@ def check_int_in_list(
         list of possible values that should be allowed
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -788,7 +810,7 @@ def check_open_insider_general(d_general) -> str:
         dictionary of general
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -821,7 +843,7 @@ def check_open_insider_date(d_date: Dict) -> str:
         dictionary of date
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -847,7 +869,7 @@ def check_open_insider_transaction_filing(d_transaction_filing: Dict) -> str:
         dictionary of transaction filing
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -903,7 +925,7 @@ def check_open_insider_industry(d_industry: Dict) -> str:
         dictionary of industry
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -924,7 +946,7 @@ def check_open_insider_insider_title(d_insider_title: Dict) -> str:
         dictionary of title
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -957,7 +979,7 @@ def check_open_insider_others(d_others: Dict) -> str:
         dictionary of others
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -987,7 +1009,7 @@ def check_open_insider_company_totals(d_company_totals: Dict) -> str:
         dictionary of company totals
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -1064,7 +1086,7 @@ def check_open_insider_screener(
         dictionary of company totals
 
     Returns
-    ----------
+    -------
     error : str
         error message. If empty, no error.
     """
@@ -1081,6 +1103,41 @@ def check_open_insider_screener(
 
 
 @log_start_end(log=logger)
+def get_preset_choices() -> Dict:
+    """
+    Return a dict containing keys as name of preset and
+    filepath as value
+    """
+
+    PRESETS_PATH = (
+        get_current_user().preferences.USER_PRESETS_DIRECTORY / "stocks" / "insider"
+    )
+    PRESETS_PATH_DEFAULT = MISCELLANEOUS_DIRECTORY / "stocks" / "insider"
+
+    preset_choices = {}
+
+    if PRESETS_PATH.exists():
+        preset_choices.update(
+            {
+                filepath.name.strip(".ini"): filepath
+                for filepath in PRESETS_PATH.iterdir()
+                if filepath.suffix == ".ini"
+            }
+        )
+
+    if PRESETS_PATH_DEFAULT.exists():
+        preset_choices.update(
+            {
+                filepath.name.strip(".ini"): filepath
+                for filepath in PRESETS_PATH_DEFAULT.iterdir()
+                if filepath.suffix == ".ini"
+            }
+        )
+
+    return preset_choices
+
+
+@log_start_end(log=logger)
 def get_open_insider_link(preset_loaded: str) -> str:
     """Get open insider link
 
@@ -1090,13 +1147,17 @@ def get_open_insider_link(preset_loaded: str) -> str:
         Loaded preset filter
 
     Returns
-    ----------
+    -------
     link : str
         open insider filtered link
     """
     preset = configparser.RawConfigParser()
     preset.optionxform = str  # type: ignore
-    preset.read(presets_path + preset_loaded + ".ini")
+    choices = get_preset_choices()
+    if preset_loaded not in choices:
+        console.print("[red]Could not find the link[/red]\n")
+        return ""
+    preset.read(choices[preset_loaded])
 
     d_general = dict(preset["General"])
     d_date = dict(preset["Date"])
@@ -1261,11 +1322,11 @@ def get_open_insider_data(url: str, has_company_name: bool) -> pd.DataFrame:
         contains company name columns
 
     Returns
-    ----------
+    -------
     data : pd.DataFrame
         open insider filtered data
     """
-    text_soup_open_insider = BeautifulSoup(requests.get(url).text, "lxml")
+    text_soup_open_insider = BeautifulSoup(request(url).text, "lxml")
 
     if len(text_soup_open_insider.find_all("tbody")) == 0:
         console.print("No insider trading found.")
@@ -1349,7 +1410,7 @@ def get_open_insider_data(url: str, has_company_name: bool) -> pd.DataFrame:
         else:
             idx = 0
 
-    d_open_insider = {
+    d_open_insider_filtered = {
         "X": l_X,
         "Filing Date": l_filing_date,
         "Trading Date": l_trading_date,
@@ -1367,6 +1428,88 @@ def get_open_insider_data(url: str, has_company_name: bool) -> pd.DataFrame:
         "Insider Link": l_insider_link,
     }
     if has_company_name:
-        d_open_insider["Company"] = l_company
+        d_open_insider_filtered["Company"] = l_company
 
-    return pd.DataFrame(d_open_insider)
+    return pd.DataFrame(d_open_insider_filtered)
+
+
+@log_start_end(log=logger)
+def get_insider_types() -> Dict:
+    """Get insider types available for insider data
+
+    Returns:
+        Dict: Dictionary with insider types and respective description
+    """
+    return d_open_insider
+
+
+@log_start_end(log=logger)
+def get_print_insider_data(type_insider: str = "lcb"):
+    """Print insider data
+
+    Parameters
+    ----------
+    type_insider: str
+        Insider type of data. Available types can be accessed through get_insider_types().
+
+    Returns
+    -------
+    data : pd.DataFrame
+        Open insider filtered data
+    """
+    response = request(
+        f"http://openinsider.com/{d_open_insider[type_insider]}",
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+
+    df = pd.read_html(response.text)[-3]
+    remove_cols = ["1d", "1w", "1m", "6m"]
+
+    if set(remove_cols).issubset(set(df.columns)):
+        df = df.drop(columns=remove_cols).fillna("-")
+    else:
+        console.print("No data found for the given insider type.", style="red")
+        df = pd.DataFrame()
+
+    if df.empty:
+        return pd.DataFrame()
+
+    columns = [
+        "X",
+        "Filing Date",
+        "Trade Date",
+        "Ticker",
+        "Company Name",
+        "Industry" if type_insider == "lcb" else "Insider Name",
+        "Title",
+        "Trade Type",
+        "Price",
+        "Qty",
+        "Owned",
+        "Diff Own",
+        "Value",
+    ]
+
+    if df.shape[1] == 13:
+        df.columns = columns
+    else:
+        df.columns = columns[1:]
+    df["Filing Date"] = df["Filing Date"].apply(
+        lambda x: "\n".join(textwrap.wrap(x, width=10)) if isinstance(x, str) else x
+    )
+    df["Company Name"] = df["Company Name"].apply(
+        lambda x: " ".join(textwrap.wrap(x, width=20)) if isinstance(x, str) else x
+    )
+    df["Title"] = df["Title"].apply(
+        lambda x: "\n".join(textwrap.wrap(x, width=10)) if isinstance(x, str) else x
+    )
+    if type_insider == "lcb":
+        df["Industry"] = df["Industry"].apply(
+            lambda x: " ".join(textwrap.wrap(x, width=20)) if isinstance(x, str) else x
+        )
+    else:
+        df["Insider Name"] = df["Insider Name"].apply(
+            lambda x: "\n".join(textwrap.wrap(x, width=20)) if isinstance(x, str) else x
+        )
+
+    return df

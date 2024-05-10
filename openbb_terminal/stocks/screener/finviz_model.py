@@ -1,6 +1,5 @@
 import configparser
 import logging
-import os
 
 import pandas as pd
 from finvizfinance.screener import (
@@ -12,12 +11,38 @@ from finvizfinance.screener import (
     valuation,
 )
 
+from openbb_terminal.core.config.paths import (
+    MISCELLANEOUS_DIRECTORY,
+)
+from openbb_terminal.core.session.current_user import get_current_user
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.rich_config import console
 
 logger = logging.getLogger(__name__)
 
-presets_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), "presets/")
+PRESETS_PATH = (
+    get_current_user().preferences.USER_PRESETS_DIRECTORY / "stocks" / "screener"
+)
+PRESETS_PATH_DEFAULT = MISCELLANEOUS_DIRECTORY / "stocks" / "screener"
+preset_choices = {}
+
+if PRESETS_PATH.exists():
+    preset_choices.update(
+        {
+            filepath.name.strip(".ini"): filepath
+            for filepath in PRESETS_PATH.iterdir()
+            if filepath.suffix == ".ini"
+        }
+    )
+
+if PRESETS_PATH_DEFAULT.exists():
+    preset_choices.update(
+        {
+            filepath.name.strip(".ini"): filepath
+            for filepath in PRESETS_PATH_DEFAULT.iterdir()
+            if filepath.suffix == ".ini"
+        }
+    )
 
 # pylint: disable=C0302
 
@@ -59,7 +84,12 @@ d_signals = {
 
 
 @log_start_end(log=logger)
-def get_screener_data(preset_loaded: str, data_type: str, limit: int, ascend: bool):
+def get_screener_data(
+    preset_loaded: str = "top_gainers",
+    data_type: str = "overview",
+    limit: int = -1,
+    ascend: bool = False,
+):
     """Screener Overview
 
     Parameters
@@ -74,22 +104,21 @@ def get_screener_data(preset_loaded: str, data_type: str, limit: int, ascend: bo
         Ascended order of stocks filtered to print
 
     Returns
-    ----------
+    -------
     pd.DataFrame
         Dataframe with loaded filtered stocks
     """
-    if data_type == "overview":
-        screen = overview.Overview()
-    elif data_type == "valuation":
-        screen = valuation.Valuation()
-    elif data_type == "financial":
-        screen = financial.Financial()
-    elif data_type == "ownership":
-        screen = ownership.Ownership()
-    elif data_type == "performance":
-        screen = performance.Performance()
-    elif data_type == "technical":
-        screen = technical.Technical()
+    df_screen = pd.DataFrame()
+    screen_type = {
+        "overview": overview.Overview,
+        "valuation": valuation.Valuation,
+        "financial": financial.Financial,
+        "ownership": ownership.Ownership,
+        "performance": performance.Performance,
+        "technical": technical.Technical,
+    }
+    if data_type in screen_type:
+        screen = screen_type[data_type]()
     else:
         console.print("Invalid selected screener type")
         return pd.DataFrame()
@@ -112,7 +141,7 @@ def get_screener_data(preset_loaded: str, data_type: str, limit: int, ascend: bo
     else:
         preset_filter = configparser.RawConfigParser()
         preset_filter.optionxform = str  # type: ignore
-        preset_filter.read(presets_path + preset_loaded + ".ini")
+        preset_filter.read(preset_choices[preset_loaded])
 
         d_general = preset_filter["General"]
         d_filters = {
@@ -152,11 +181,27 @@ def get_screener_data(preset_loaded: str, data_type: str, limit: int, ascend: bo
                     order=d_general["Order"], ascend=ascend
                 )
 
+        elif limit > 0:
+            df_screen = screen.screener_view(limit=limit, ascend=ascend)
         else:
-            if limit > 0:
-                df_screen = screen.screener_view(limit=limit, ascend=ascend)
-            else:
-                df_screen = screen.screener_view(ascend=ascend)
+            df_screen = screen.screener_view(ascend=ascend)
+
+    df_screen.columns = [val.strip("\n") for val in df_screen.columns]
+    if "Company" in df_screen.columns:
+        df_screen["Company"] = df_screen["Company"].str.replace(",", "")
+    if data_type == "performance":
+        df_screen = df_screen.rename(
+            columns={
+                "Perf Week": "1W",
+                "Perf Month": "1M",
+                "Perf Quart": "3M",
+                "Perf Half": "6M",
+                "Perf Year": "1Y",
+                "Perf YTD": "YTD",
+                "Volatility W": "1W Volatility",
+                "Volatility M": "1M Volatility",
+            }
+        )
 
     return df_screen
 

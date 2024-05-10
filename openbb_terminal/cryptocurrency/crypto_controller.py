@@ -1,54 +1,51 @@
 """Cryptocurrency Context Controller"""
+
 __docformat__ = "numpy"
 # pylint: disable=R0904, C0302, R1710, W0622, C0201, C0301
 
 import argparse
 import logging
 import os
-from typing import List
+from typing import List, Optional
 
-from binance.client import Client
-from prompt_toolkit.completion import NestedCompleter
-
-import openbb_terminal.config_terminal as cfg
-from openbb_terminal import feature_flags as obbff
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.cryptocurrency import cryptocurrency_helpers, pyth_model, pyth_view
+from openbb_terminal.cryptocurrency.crypto_views import find
 from openbb_terminal.cryptocurrency.cryptocurrency_helpers import (
-    FIND_KEYS,
     display_all_coins,
-    find,
     plot_chart,
 )
 from openbb_terminal.cryptocurrency.due_diligence import (
-    binance_model,
     binance_view,
-    coinbase_model,
     coinpaprika_view,
     finbrain_crypto_view,
-    pycoingecko_model,
     pycoingecko_view,
 )
+from openbb_terminal.custom_prompt_toolkit import NestedCompleter
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.helper_funcs import (
     EXPORT_BOTH_RAW_DATA_AND_FIGURES,
     EXPORT_ONLY_RAW_DATA_ALLOWED,
     check_positive,
-    parse_known_args_and_warn,
+    export_data,
 )
 from openbb_terminal.menu import session
 from openbb_terminal.parent_classes import CryptoBaseController
-from openbb_terminal.rich_config import console
+from openbb_terminal.rich_config import MenuText, console
 
 # pylint: disable=import-outside-toplevel
 
 
 logger = logging.getLogger(__name__)
 
+FIND_KEYS = ["id", "symbol", "name"]
+
 CRYPTO_SOURCES = {
-    "bin": "Binance",
-    "cg": "CoinGecko",
-    "cp": "CoinPaprika",
-    "cb": "Coinbase",
-    "yf": "YahooFinance",
+    "Binance": "Binance",
+    "CoingGecko": "CoinGecko",
+    "CoinPaprika": "CoinPaprika",
+    "Coinbase": "Coinbase",
+    "YahooFinance": "YahooFinance",
 }
 
 
@@ -57,356 +54,256 @@ class CryptoController(CryptoBaseController):
 
     CHOICES_COMMANDS = [
         "headlines",
-        "chart",
+        "candle",
         "load",
         "find",
         "prt",
         "resources",
+        "price",
     ]
-    CHOICES_MENUS = ["ta", "dd", "ov", "disc", "onchain", "defi", "nft", "pred", "qa"]
+    CHOICES_MENUS = [
+        "ta",
+        "dd",
+        "ov",
+        "disc",
+        "onchain",
+        "defi",
+        "tools",
+        "nft",
+        "qa",
+        "forecast",
+    ]
 
     DD_VIEWS_MAPPING = {
-        "cg": pycoingecko_view,
-        "cp": coinpaprika_view,
-        "bin": binance_view,
+        "CoingGecko": pycoingecko_view,
+        "CoinPaprika": coinpaprika_view,
+        "Binance": binance_view,
     }
     PATH = "/crypto/"
     FILE_PATH = os.path.join(os.path.dirname(__file__), "README.md")
+    CHOICES_GENERATION = True
 
-    def __init__(self, queue: List[str] = None):
+    def __init__(self, queue: Optional[List[str]] = None):
         """Constructor"""
         super().__init__(queue)
 
-        if session and obbff.USE_PROMPT_TOOLKIT:
-            choices: dict = {c: {} for c in self.controller_choices}
-            choices["load"]["--source"] = {c: {} for c in CRYPTO_SOURCES.keys()}
-            choices["find"]["--source"] = {c: {} for c in CRYPTO_SOURCES.keys()}
-            choices["find"]["-k"] = {c: {} for c in FIND_KEYS}
-            choices["headlines"] = {c: {} for c in finbrain_crypto_view.COINS}
-            # choices["prt"]["--vs"] = {c: {} for c in coingecko_coin_ids} # list is huge. makes typing buggy
+        if session and get_current_user().preferences.USE_PROMPT_TOOLKIT:
+            choices: dict = self.choices_default
+
+            choices["load"] = {
+                "--interval": {
+                    c: {}
+                    for c in [
+                        "1",
+                        "5",
+                        "15",
+                        "30",
+                        "60",
+                        "240",
+                        "1440",
+                        "10080",
+                        "43200",
+                    ]
+                },
+                "-i": "--interval",
+                "--exchange": {c: {} for c in self.exchanges},
+                "--source": {c: {} for c in ["CCXT", "YahooFinance", "CoinGecko"]},
+                "--vs": {c: {} for c in ["usd", "eur"]},
+                "--start": None,
+                "-s": "--start",
+                "--end": None,
+                "-e": "--end",
+            }
+
             self.completer = NestedCompleter.from_nested_dict(choices)
 
     def print_help(self):
         """Print help"""
-        source_txt = CRYPTO_SOURCES.get(self.source, "?") if self.source != "" else ""
-        has_ticker_start = "" if self.coin else "[unvl]"
-        has_ticker_end = "" if self.coin else "[/unvl]"
-        help_text = f"""[cmds]
-    load        load a specific cryptocurrency for analysis
-    find        find coins[/cmds]
-
-[param]Coin: [/param]{self.coin}
-[param]Source: [/param]{source_txt}
-[cmds]
-    headlines   crypto sentiment from 15+ major news headlines [src][Finbrain][/src]{has_ticker_start}
-    chart       view a candle chart for a specific cryptocurrency
-    prt         potential returns tool - check how much upside if ETH reaches BTC market cap{has_ticker_end}
-[/cmds][menu]
->   disc        discover trending cryptocurrencies,     e.g.: top gainers, losers, top sentiment
->   ov          overview of the cryptocurrencies,       e.g.: market cap, DeFi, latest news, top exchanges, stables
->   onchain     information on different blockchains,   e.g.: eth gas fees, whale alerts, DEXes info
->   defi        decentralized finance information,      e.g.: dpi, llama, tvl, lending, borrow, funding
->   nft         non-fungible tokens,                    e.g.: today drops{has_ticker_start}
->   dd          due-diligence for loaded coin,          e.g.: coin information, social media, market stats
->   ta          technical analysis for loaded coin,     e.g.: ema, macd, rsi, adx, bbands, obv
->   pred        prediction techniques,                  e.g.: regression, arima, rnn, lstm, conv1d, monte carlo
->   qa          quantitative analysis                   e.g.: decompose, cusum, residuals analysis[/menu]
-{has_ticker_end}
-"""
-        console.print(text=help_text, menu="Cryptocurrency")
+        mt = MenuText("crypto/")
+        mt.add_cmd("load")
+        mt.add_cmd("find")
+        mt.add_cmd("price", "Pyth")
+        mt.add_raw("\n")
+        mt.add_param(
+            "_symbol", f"{self.symbol.upper()}/{self.vs.upper()}" if self.symbol else ""
+        )
+        if self.source == "CCXT":
+            mt.add_param(
+                "_exchange", self.exchange if self.symbol and self.exchange else ""
+            )
+        mt.add_param("_source", self.source if self.symbol and self.source else "")
+        mt.add_param("_interval", self.current_interval)
+        mt.add_raw("\n")
+        mt.add_cmd("headlines")
+        mt.add_cmd("candle", self.symbol)
+        mt.add_cmd("prt", self.symbol)
+        mt.add_raw("\n")
+        mt.add_menu("disc")
+        mt.add_menu("ov")
+        mt.add_menu("onchain")
+        mt.add_menu("defi")
+        mt.add_menu("tools")
+        mt.add_menu("nft")
+        mt.add_menu("dd", self.symbol)
+        mt.add_menu("ta", self.symbol)
+        mt.add_menu("qa", self.symbol)
+        mt.add_menu("forecast", self.symbol)
+        console.print(text=mt.menu_text, menu="Cryptocurrency")
 
     @log_start_end(log=logger)
     def call_prt(self, other_args):
         """Process prt command"""
-        if self.coin:
-            parser = argparse.ArgumentParser(
-                add_help=False,
-                formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-                prog="prt",
-                description="Potential Returns Tool"
-                "Tool to check returns if loaded coin reaches provided price or other crypto market cap"
-                "Uses CoinGecko to grab coin data (price and market cap).",
-            )
-            parser.add_argument(
-                "--vs",
-                help="Coin to compare with",
-                dest="vs",
-                type=str,
-                required="-h" not in other_args,
-            )
-            parser.add_argument(
-                "-p",
-                "--price",
-                help="Desired price",
-                dest="price",
-                type=int,
-                default=None,
-            )
-            parser.add_argument(
-                "-t",
-                "--top",
-                help="Compare with top N coins",
-                dest="top",
-                type=int,
-                default=None,
-            )
-            if other_args and "-" not in other_args[0][0]:
-                other_args.insert(0, "--vs")
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="prt",
+            description="Potential Returns Tool"
+            "Tool to check returns if loaded coin reaches provided price or other crypto market cap"
+            "Uses CoinGecko to grab coin data (price and market cap).",
+        )
+        parser.add_argument(
+            "--vs",
+            help="Coin to compare with",
+            dest="vs",
+            type=str,
+            required="-h" not in other_args and "--help" not in other_args,
+            default=None,
+        )
+        parser.add_argument(
+            "-p",
+            "--price",
+            help="Desired price",
+            dest="price",
+            type=int,
+            default=None,
+        )
+        parser.add_argument(
+            "-t",
+            "--top",
+            help="Compare with top N coins",
+            dest="top",
+            type=int,
+            default=None,
+        )
+        if other_args and "-" not in other_args[0][0]:
+            other_args.insert(0, "--vs")
 
-            ns_parser = parse_known_args_and_warn(
-                parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
-            )
-
-            if ns_parser:
-                if ns_parser.vs:
-                    coin_found = pycoingecko_model.check_coin(ns_parser.vs)
+        if ns_parser := self.parse_known_args_and_warn(
+            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
+        ):
+            if self.symbol:
+                num_args = 0
+                for arg in vars(ns_parser):
+                    if getattr(ns_parser, arg):
+                        num_args = num_args + 1
+                        if num_args > 1:
+                            console.print("[red]Please chose only one flag[/red]\n")
+                            return
+                current_coin_id = cryptocurrency_helpers.get_coingecko_id(self.symbol)
+                if ns_parser.vs is not None:
+                    coin_found = cryptocurrency_helpers.get_coingecko_id(ns_parser.vs)
                     if not coin_found:
                         console.print(
                             f"VS Coin '{ns_parser.vs}' not found in CoinGecko\n"
                         )
                         return
-                    pycoingecko_view.display_coin_potential_returns(
-                        self.coin_map_df["CoinGecko"],
-                        coin_found,
-                        ns_parser.top,
-                        ns_parser.price,
-                    )
-
                 else:
+                    coin_found = None
+                if (
+                    ns_parser.vs is None
+                    and ns_parser.top is None
+                    and ns_parser.price is None
+                ):
                     console.print(
-                        "No coin selected. Use 'load' to load the coin you want to look at.\n"
-                    )
-
-    @log_start_end(log=logger)
-    def call_chart(self, other_args):
-        """Process chart command"""
-        if self.coin:
-            parser = argparse.ArgumentParser(
-                add_help=False,
-                formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-                prog="chart",
-                description="""Display chart for loaded coin. You can specify currency vs which you want
-                to show chart and also number of days to get data for.""",
-            )
-
-            if self.source == "cp":
-                parser.add_argument(
-                    "--vs",
-                    default="usd",
-                    dest="vs",
-                    help="Currency to display vs coin",
-                    choices=["usd", "btc", "BTC", "USD"],
-                    type=str,
-                )
-                parser.add_argument(
-                    "-d",
-                    "--days",
-                    default=30,
-                    dest="days",
-                    help="Number of days to get data for",
-                    type=check_positive,
-                )
-
-            if self.source == "cg":
-                parser.add_argument(
-                    "--vs", default="usd", dest="vs", help="Currency to display vs coin"
-                )
-                parser.add_argument(
-                    "-d",
-                    "--days",
-                    default=30,
-                    dest="days",
-                    help="Number of days to get data for",
-                )
-
-            if self.source == "bin":
-                client = Client(cfg.API_BINANCE_KEY, cfg.API_BINANCE_SECRET)
-                interval_map = {
-                    "1day": client.KLINE_INTERVAL_1DAY,
-                    "3day": client.KLINE_INTERVAL_3DAY,
-                    "1hour": client.KLINE_INTERVAL_1HOUR,
-                    "2hour": client.KLINE_INTERVAL_2HOUR,
-                    "4hour": client.KLINE_INTERVAL_4HOUR,
-                    "6hour": client.KLINE_INTERVAL_6HOUR,
-                    "8hour": client.KLINE_INTERVAL_8HOUR,
-                    "12hour": client.KLINE_INTERVAL_12HOUR,
-                    "1week": client.KLINE_INTERVAL_1WEEK,
-                    "1min": client.KLINE_INTERVAL_1MINUTE,
-                    "3min": client.KLINE_INTERVAL_3MINUTE,
-                    "5min": client.KLINE_INTERVAL_5MINUTE,
-                    "15min": client.KLINE_INTERVAL_15MINUTE,
-                    "30min": client.KLINE_INTERVAL_30MINUTE,
-                    "1month": client.KLINE_INTERVAL_1MONTH,
-                }
-
-                _, quotes = binance_model.show_available_pairs_for_given_symbol(
-                    self.coin
-                )
-
-                parser.add_argument(
-                    "--vs",
-                    help="Quote currency (what to view coin vs)",
-                    dest="vs",
-                    type=str,
-                    default="USDT",
-                    choices=quotes,
-                )
-                parser.add_argument(
-                    "-i",
-                    "--interval",
-                    help="Interval to get data",
-                    choices=list(interval_map.keys()),
-                    dest="interval",
-                    default="1day",
-                    type=str,
-                )
-                parser.add_argument(
-                    "-l",
-                    "--limit",
-                    dest="limit",
-                    default=100,
-                    help="Number to get",
-                    type=check_positive,
-                )
-
-            if self.source == "cb":
-                interval_map = {
-                    "1min": 60,
-                    "5min": 300,
-                    "15min": 900,
-                    "1hour": 3600,
-                    "6hour": 21600,
-                    "24hour": 86400,
-                    "1day": 86400,
-                }
-
-                _, quotes = coinbase_model.show_available_pairs_for_given_symbol(
-                    self.coin
-                )
-                if len(quotes) < 0:
-                    console.print(
-                        f"Couldn't find any quoted coins for provided symbol {self.coin}"
+                        "[red]Please chose a flag: --top, --vs, or --price [/red]\n"
                     )
                     return
-                parser.add_argument(
-                    "--vs",
-                    help="Quote currency (what to view coin vs)",
-                    dest="vs",
-                    type=str,
-                    default="USDT" if "USDT" in quotes else quotes[0],
-                    choices=quotes,
+                pycoingecko_view.display_coin_potential_returns(
+                    current_coin_id,
+                    coin_found,
+                    ns_parser.top,
+                    ns_parser.price,
                 )
-                parser.add_argument(
-                    "-i",
-                    "--interval",
-                    help="Interval to get data",
-                    choices=list(interval_map.keys()),
-                    dest="interval",
-                    default="1day",
-                    type=str,
+            else:
+                console.print("[red]Please load a coin first![/red]\n")
+
+    @log_start_end(log=logger)
+    def call_price(self, other_args):
+        """Process price command"""
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="price",
+            description="""Display price and interval of confidence in real-time. [Source: Pyth]""",
+        )
+        parser.add_argument(
+            "-s",
+            "--symbol",
+            required="-h" not in other_args and "--help" not in other_args,
+            type=str,
+            dest="symbol",
+            help="Symbol of coin to load data for, ~100 symbols are available",
+            choices=pyth_model.ASSETS.keys(),
+            metavar="SYMBOL",
+        )
+        if other_args and "-" not in other_args[0][0]:
+            other_args.insert(0, "-s")
+
+        if ns_parser := self.parse_known_args_and_warn(parser, other_args):
+            upper_symbol = ns_parser.symbol.upper()
+            if "-USD" not in ns_parser.symbol:
+                upper_symbol += "-USD"
+            if upper_symbol in pyth_model.ASSETS:
+                console.print(
+                    "[param]If it takes too long, you can use 'Ctrl + C' to cancel.\n[/param]"
                 )
-                parser.add_argument(
-                    "-l",
-                    "--limit",
-                    dest="limit",
-                    default=100,
-                    help="Number to get",
-                    type=check_positive,
-                )
+                pyth_view.display_price(upper_symbol)
+            else:
+                console.print("[red]The symbol selected does not exist.[/red]\n")
 
-            if self.source == "yf":
+    @log_start_end(log=logger)
+    def call_candle(self, other_args):
+        """Process candle command"""
 
-                interval_map = {
-                    "1min": "1m",
-                    "2min": "2m",
-                    "5min": "5m",
-                    "15min": "15m",
-                    "30min": "30m",
-                    "60min": "60m",
-                    "90min": "90m",
-                    "1hour": "1h",
-                    "1day": "1d",
-                    "5day": "5d",
-                    "1week": "1wk",
-                    "1month": "1mo",
-                    "3month": "3mo",
-                }
+        parser = argparse.ArgumentParser(
+            add_help=False,
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            prog="candle",
+            description="""Display chart for loaded coin. You can specify currency vs which you want
+            to show chart and also number of days to get data for.""",
+        )
+        parser.add_argument(
+            "--log",
+            help="Plot with y axis on log scale",
+            action="store_true",
+            default=False,
+            dest="logy",
+        )
 
-                parser.add_argument(
-                    "--vs",
-                    default="USD",
-                    dest="vs",
-                    help="Currency to display vs coin",
-                    choices=[
-                        "CAD",
-                        "CNY",
-                        "ETH",
-                        "EUR",
-                        "GBP",
-                        "INR",
-                        "JPY",
-                        "KRW",
-                        "RUB",
-                        "USD",
-                        "AUD",
-                        "BTC",
-                    ],
-                    type=str,
-                )
-
-                parser.add_argument(
-                    "-i",
-                    "--interval",
-                    help="Interval to get data",
-                    choices=list(interval_map.keys()),
-                    dest="interval",
-                    default="1day",
-                    type=str,
-                )
-
-                parser.add_argument(
-                    "-l",
-                    "--limit",
-                    dest="limit",
-                    default=100,
-                    help="Number to get",
-                    type=check_positive,
-                )
-
-                parser.add_argument(
-                    "-d",
-                    "--days",
-                    default=30,
-                    dest="days",
-                    help="Number of days to get data for",
-                )
-
-            ns_parser = parse_known_args_and_warn(
-                parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
+        if ns_parser := self.parse_known_args_and_warn(
+            parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
+        ):
+            if not self.symbol:
+                console.print("No coin loaded. First use `load {symbol}`\n")
+                return
+            figure = plot_chart(
+                exchange=self.exchange,
+                source=self.source,
+                to_symbol=self.symbol,
+                from_symbol=self.current_currency,
+                prices_df=self.current_df,
+                interval=self.current_interval,
+                yscale="log" if ns_parser.logy else "linear",
+                external_axes=ns_parser.is_image,
             )
-
-            if ns_parser:
-                if self.source in ["bin", "cb"]:
-                    limit = ns_parser.limit
-                    interval = ns_parser.interval
-                    days = 0
-                elif self.source == "yf":
-                    limit = ns_parser.limit
-                    interval = interval_map[ns_parser.interval]
-                    days = ns_parser.days
-                else:
-                    limit = 0
-                    interval = "1day"
-                    days = ns_parser.days
-
-                plot_chart(
-                    coin_map_df=self.coin_map_df,
-                    limit=limit,
-                    interval=interval,
-                    days=days,
-                    currency=ns_parser.vs,
-                    source=self.source,
-                )
+            export_data(
+                ns_parser.export,
+                os.path.join(os.path.dirname(os.path.abspath(__file__))),
+                f"{self.symbol}",
+                self.current_df,
+                " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None,
+                figure=figure,
+            )
 
     @log_start_end(log=logger)
     def call_ta(self, _):
@@ -416,12 +313,12 @@ class CryptoController(CryptoBaseController):
         )
 
         # TODO: Play with this to get correct usage
-        if self.coin:
+        if self.symbol:
             if self.current_currency != "" and not self.current_df.empty:
                 self.queue = self.load_class(
                     TechnicalAnalysisController,
                     stock=self.current_df,
-                    coin=self.coin,
+                    coin=self.symbol,
                     start=self.current_df.index[0],
                     interval="",
                     queue=self.queue,
@@ -429,6 +326,15 @@ class CryptoController(CryptoBaseController):
 
         else:
             console.print("No coin selected. Use 'load' to load a coin.\n")
+
+    @log_start_end(log=logger)
+    def call_tools(self, _):
+        """Process tools command"""
+        from openbb_terminal.cryptocurrency.tools.tools_controller import (
+            ToolsController,
+        )
+
+        self.queue = self.load_class(ToolsController, self.queue)
 
     @log_start_end(log=logger)
     def call_disc(self, _):
@@ -464,7 +370,6 @@ class CryptoController(CryptoBaseController):
             prog="headlines",
             description="""Display sentiment analysis from FinBrain for chosen Cryptocurrencies""",
         )
-
         parser.add_argument(
             "-c",
             "--coin",
@@ -474,33 +379,27 @@ class CryptoController(CryptoBaseController):
             help="Symbol of coin to load data for, ~100 symbols are available",
             choices=finbrain_crypto_view.COINS,
         )
-
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-c")
-
-        ns_parser = parse_known_args_and_warn(
+        if ns_parser := self.parse_known_args_and_warn(
             parser, other_args, EXPORT_BOTH_RAW_DATA_AND_FIGURES
-        )
-
-        if ns_parser:
+        ):
             finbrain_crypto_view.display_crypto_sentiment_analysis(
-                coin=ns_parser.coin, export=ns_parser.export
+                symbol=ns_parser.coin, export=ns_parser.export
             )
 
     @log_start_end(log=logger)
     def call_dd(self, _):
         """Process dd command"""
-        if self.coin:
+        if self.symbol:
             from openbb_terminal.cryptocurrency.due_diligence.dd_controller import (
                 DueDiligenceController,
             )
 
             self.queue = self.load_class(
                 DueDiligenceController,
-                self.coin,
-                self.source,
                 self.symbol,
-                self.coin_map_df,
+                self.source,
                 queue=self.queue,
             )
         else:
@@ -508,53 +407,17 @@ class CryptoController(CryptoBaseController):
 
     @log_start_end(log=logger)
     def call_qa(self, _):
-        """Process pred command"""
-        if self.coin:
+        """Process qa command"""
+        if self.symbol:
             from openbb_terminal.cryptocurrency.quantitative_analysis import (
                 qa_controller,
             )
 
-            if self.current_interval != "1day":
-                console.print("Only interval `1day` is possible for now.\n")
-            else:
-                self.queue = self.load_class(
-                    qa_controller.QaController,
-                    self.coin,
-                    self.current_df,
-                    self.queue,
-                )
-
-    @log_start_end(log=logger)
-    def call_pred(self, _):
-        """Process pred command"""
-        if obbff.ENABLE_PREDICT:
-            if self.coin:
-                try:
-                    from openbb_terminal.cryptocurrency.prediction_techniques import (
-                        pred_controller,
-                    )
-
-                    if self.current_interval != "1day":
-                        console.print("Only interval `1day` is possible for now.\n")
-                    else:
-                        self.queue = self.load_class(
-                            pred_controller.PredictionTechniquesController,
-                            self.coin,
-                            self.current_df,
-                            self.queue,
-                        )
-                except ImportError:
-                    logger.exception("Tensorflow not available")
-                    console.print("[red]Run pip install tensorflow to continue[/red]\n")
-
-            else:
-                console.print(
-                    "No coin selected. Use 'load' to load the coin you want to look at.\n"
-                )
-        else:
-            console.print(
-                "Predict is disabled. Check ENABLE_PREDICT flag on feature_flags.py",
-                "\n",
+            self.queue = self.load_class(
+                qa_controller.QaController,
+                self.symbol,
+                self.current_df,
+                self.queue,
             )
 
     @log_start_end(log=logger)
@@ -592,7 +455,7 @@ class CryptoController(CryptoBaseController):
             -l, --limit it displays top N number of records.
             coins: Shows list of coins available on CoinGecko, CoinPaprika and Binance.If you provide name of
             coin then in result you will see ids of coins with best match for all mentioned services.
-            If you provide ALL keyword in your search query, then all coins will be displayed. To move over coins you
+            If you provide "ALL" in your coin search query, then all coins will be displayed. To move over coins you
             can use pagination mechanism with skip, top params. E.g. coins ALL --skip 100 --limit 30 then all coins
             from 100 to 130 will be displayed. By default skip = 0, limit = 10.
             If you won't provide source of the data everything will be displayed (CoinGecko, CoinPaprika, Binance).
@@ -600,16 +463,14 @@ class CryptoController(CryptoBaseController):
             uniswap on CoinPaprika then use: coins uniswap --source cp --limit 10
             """,
         )
-
         parser.add_argument(
             "-c",
             "--coin",
             help="Symbol Name or Id of Coin",
             dest="coin",
-            required="-h" not in other_args,
+            required="-h" not in other_args and "--help" not in other_args,
             type=str,
         )
-
         parser.add_argument(
             "-k",
             "--key",
@@ -619,7 +480,6 @@ class CryptoController(CryptoBaseController):
             choices=FIND_KEYS,
             default="symbol",
         )
-
         parser.add_argument(
             "-l",
             "--limit",
@@ -628,16 +488,6 @@ class CryptoController(CryptoBaseController):
             help="Number of records to display",
             type=check_positive,
         )
-
-        parser.add_argument(
-            "--source",
-            dest="source",
-            choices=CRYPTO_SOURCES.keys(),
-            default="cg",
-            help="Source of data.",
-            type=str,
-        )
-
         parser.add_argument(
             "-s",
             "--skip",
@@ -645,28 +495,52 @@ class CryptoController(CryptoBaseController):
             dest="skip",
             help="Skip n of records",
             type=check_positive,
+            choices=range(1, 300),
+            metavar="SKIP",
         )
-
-        if other_args and not other_args[0][0] == "-":
+        if other_args and other_args[0][0] != "-":
             other_args.insert(0, "-c")
 
-        ns_parser = parse_known_args_and_warn(
-            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
+        ns_parser = self.parse_known_args_and_warn(
+            parser,
+            other_args,
+            EXPORT_ONLY_RAW_DATA_ALLOWED,
         )
         # TODO: merge find + display_all_coins
         if ns_parser:
-            find(
-                coin=ns_parser.coin,
-                source=ns_parser.source,
-                key=ns_parser.key,
-                top=ns_parser.limit,
-                export=ns_parser.export,
-            )
-            display_all_coins(
-                coin=ns_parser.coin,
-                source=ns_parser.source,
-                top=ns_parser.limit,
-                skip=ns_parser.skip,
-                show_all=bool("ALL" in other_args),
-                export=ns_parser.export,
-            )
+            if ns_parser.coin == "ALL":
+                display_all_coins(
+                    symbol=ns_parser.coin,
+                    source=ns_parser.source,
+                    limit=ns_parser.limit,
+                    skip=ns_parser.skip,
+                    show_all=True,
+                    export=ns_parser.export,
+                    sheet_name=(
+                        " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                    ),
+                )
+            else:
+                find(
+                    query=ns_parser.coin,
+                    source=ns_parser.source,
+                    key=ns_parser.key,
+                    limit=ns_parser.limit,
+                    export=ns_parser.export,
+                    sheet_name=(
+                        " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                    ),
+                )
+
+    @log_start_end(log=logger)
+    def call_forecast(self, _):
+        """Process forecast command"""
+        from openbb_terminal.forecast import forecast_controller
+
+        console.print(self.symbol)
+        self.queue = self.load_class(
+            forecast_controller.ForecastController,
+            self.symbol,
+            self.current_df,
+            self.queue,
+        )

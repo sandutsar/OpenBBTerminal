@@ -1,7 +1,6 @@
 .git
 .*
 .dockerignore
-.env*
 .gitignore
 docker-compose.yaml
 Dockerfile*
@@ -9,5 +8,4 @@ Dockerfile*
 .idea
 __pycache__
 .python-version
-jupyterlab/*/node_modules
 logs/

@@ -1,4 +1,5 @@
 """Cryptopanic model"""
+
 __docformat__ = "numpy"
 
 import logging
@@ -8,11 +9,13 @@ import time
 from typing import Any, Optional
 
 import pandas as pd
-import requests
 
-import openbb_terminal.config_terminal as cfg
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.cryptocurrency.cryptocurrency_helpers import prepare_all_coins_df
+from openbb_terminal.decorators import check_api_key, log_start_end
+from openbb_terminal.helper_funcs import request
+from openbb_terminal.parent_classes import CRYPTO_SOURCES
 from openbb_terminal.rich_config import console
-from openbb_terminal.decorators import log_start_end
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,7 @@ class ApiKeyException(Exception):
 
 
 @log_start_end(log=logger)
+@check_api_key(["API_CRYPTO_PANIC_KEY"])
 def make_request(**kwargs: Any) -> Optional[dict]:
     """Helper methods for requests [Source: https://cryptopanic.com/developers/api/]
 
@@ -60,18 +64,21 @@ def make_request(**kwargs: Any) -> Optional[dict]:
     ----------
     kwargs: Any
         Keyword arguments with parameters for GET request to cryptopanic api.
+
     Returns
     -------
-    dict:
+    Optional[dict]
         response from api request
     """
 
-    api_key = cfg.API_CRYPTO_PANIC_KEY
+    api_key = get_current_user().credentials.API_CRYPTO_PANIC_KEY
     crypto_panic_url = "https://cryptopanic.com/api/v1"
 
     post_kind = kwargs.get("post_kind")
     filter_ = kwargs.get("filter_")
     region = kwargs.get("region")
+    currency = kwargs.get("currency")
+    source = kwargs.get("source")
 
     if post_kind not in ["news", "media", "all"]:
         post_kind = "all"
@@ -92,16 +99,30 @@ def make_request(**kwargs: Any) -> Optional[dict]:
     if region and region in REGIONS:
         url += f"&regions={region}"
 
-    response = requests.get(url)
+    if currency and source:
+        source_full = CRYPTO_SOURCES[source]
+        df_mapp = prepare_all_coins_df()
+
+        try:
+            mapped_coin = df_mapp.loc[df_mapp[source_full] == currency][
+                "Symbol"
+            ].values[0]
+            url += f"&currency={mapped_coin.upper()}"
+        except IndexError:
+            console.print(f"Cannot find news for {currency}.\n")
+            return {}
+
+    response = request(url)
+    response_json = response.json()
     result = None
 
     if response.status_code == 200:
-        result = response.json()
+        result = response_json
     else:
-        if "Token not found" in response.json()["info"]:
+        if "Token not found" in response_json["info"]:
             console.print("[red]Invalid API Key[/red]\n")
         else:
-            console.print(response.json()["info"])
+            console.print(response_json["info"])
 
         logger.warning("Invalid authentication: %s", response.text)
 
@@ -140,6 +161,10 @@ def get_news(
     post_kind: str = "news",
     filter_: Optional[str] = None,
     region: str = "en",
+    source: Optional[str] = None,
+    symbol: Optional[str] = None,
+    sortby: str = "published_at",
+    ascend: bool = True,
 ) -> pd.DataFrame:
     """Get recent posts from CryptoPanic news aggregator platform. [Source: https://cryptopanic.com/]
 
@@ -152,8 +177,12 @@ def get_news(
     filter_: Optional[str]
         Filter by kind of news. One from list: rising|hot|bullish|bearish|important|saved|lol
     region: str
-        Filter news by regions. Available regions are: en (English), de (Deutsch), nl (Dutch), es (Español),
-        fr (Français), it (Italiano), pt (Português), ru (Русский)
+        Filter news by regions. Available regions are: en (English), de (Deutsch), nl (Dutch),
+        es (Español), fr (Français), it (Italiano), pt (Português), ru (Русский)
+    sortby: str
+        Key to sort by.
+    ascend: bool
+        Sort in ascend order.
 
     Returns
     -------
@@ -166,7 +195,12 @@ def get_news(
 
     results = []
 
-    response = make_request(post_kind=post_kind, filter_=filter_, region=region)
+    kwargs = {}
+    if source:
+        kwargs["source"] = source
+    response = make_request(
+        post_kind=post_kind, filter_=filter_, region=region, currency=symbol, **kwargs
+    )
 
     if response:
         data, next_page, _ = (
@@ -184,7 +218,7 @@ def get_news(
             counter += 1
             try:
                 time.sleep(0.2)
-                res = requests.get(next_page).json()
+                res = request(next_page).json()
                 for post in res["results"]:
                     results.append(_parse_post(post))
                 next_page = res.get("next")
@@ -198,10 +232,12 @@ def get_news(
         try:
             df = pd.DataFrame(results)
             df["title"] = df["title"].apply(
-                lambda x: "\n".join(textwrap.wrap(x, width=66))
-                if isinstance(x, str)
-                else x
+                lambda x: (
+                    "\n".join(textwrap.wrap(x, width=66)) if isinstance(x, str) else x
+                )
             )
+            df["published_at"] = pd.to_datetime(df["published_at"]).dt.date
+            df = df.sort_values(by=sortby, ascending=ascend)
             return df
         except Exception as e:  # noqa: F841
             logger.exception(str(e))

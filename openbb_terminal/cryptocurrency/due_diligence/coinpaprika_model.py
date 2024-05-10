@@ -1,10 +1,11 @@
 """CoinPaprika model"""
+
 __docformat__ = "numpy"
 
 import logging
 import textwrap
 from datetime import datetime, timedelta
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 
 import pandas as pd
 from dateutil import parser
@@ -13,45 +14,40 @@ from openbb_terminal.cryptocurrency.coinpaprika_helpers import PaprikaSession
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.rich_config import console
 
+# pylint: disable=unsupported-assignment-operation
+
 logger = logging.getLogger(__name__)
+# pylint: disable=unsupported-assignment-operation
 
 
 @log_start_end(log=logger)
-def get_coin(coin_id: str = "eth-ethereum") -> dict:
-    """Get coin by id [Source: CoinPaprika]
-
-    Parameters
-    ----------
-    coin_id: str
-        id of coin from coinpaprika e.g. Ethereum - > 'eth-ethereum'
-    Returns
-    -------
-    dict
-        Coin response
-    """
-
-    session = PaprikaSession()
-    coin = session.make_request(session.ENDPOINTS["coin"].format(coin_id))
-    return coin
-
-
-@log_start_end(log=logger)
-def get_coin_twitter_timeline(coin_id: str = "eth-ethereum") -> pd.DataFrame:
+def get_coin_twitter_timeline(
+    symbol: str = "BTC", sortby: str = "date", ascend: bool = True
+) -> pd.DataFrame:
     """Get twitter timeline for given coin id. Not more than last 50 tweets [Source: CoinPaprika]
 
     Parameters
     ----------
-    coin_id: str
-        id of coin from coinpaprika e.g. Ethereum - > 'eth-ethereum'
+    symbol: str
+        Cryptocurrency symbol (e.g. BTC)
+    sortby: str
+        Key by which to sort data. Every column name is valid
+        (see for possible values:
+        https://api.coinpaprika.com/docs#tag/Coins/paths/~1coins~1%7Bcoin_id%7D~1twitter/get).
+    ascend: bool
+        Flag to sort data descending
+
     Returns
     -------
-    pandas.DataFrame
+    pd.DataFrame
         Twitter timeline for given coin.
         Columns: date, user_name, status, retweet_count, like_count
     """
+    # get coinpaprika id using crypto symbol
+    cp_id = get_coinpaprika_id(symbol)
 
     session = PaprikaSession()
-    res = session.make_request(session.ENDPOINTS["coin_tweeter"].format(coin_id))
+    res = session.make_request(session.ENDPOINTS["coin_tweeter"].format(cp_id))
     if "error" in res:
         console.print(res)
         return pd.DataFrame()
@@ -65,45 +61,61 @@ def get_coin_twitter_timeline(coin_id: str = "eth-ethereum") -> pd.DataFrame:
         lambda x: "\n".join(textwrap.wrap(x, width=80)) if isinstance(x, str) else x
     )
     df["status"] = df["status"].apply(lambda x: x.replace("  ", ""))
-    df["date"] = df["date"].apply(lambda x: x.replace("T", "\n"))
-    df["date"] = df["date"].apply(lambda x: x.replace("Z", ""))
+    df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%dT%H:%M:%SZ").dt.strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    df = df.sort_values(by=sortby, ascending=ascend)
+    # Remove unicode chars (it breaks pretty tables)
+    df["status"] = df["status"].apply(
+        lambda text: "".join(i if ord(i) < 128 else "" for i in text)
+    )
     return df
 
 
 @log_start_end(log=logger)
-def get_coin_events_by_id(coin_id: str = "eth-ethereum") -> pd.DataFrame:
-    """Get all events related to given coin like conferences, start date of futures trading etc. [Source: CoinPaprika]
+def get_coin_events_by_id(
+    symbol: str = "BTC", sortby: str = "date", ascend: bool = False
+) -> pd.DataFrame:
+    """Get all events related to given coin like conferences, start date of futures trading etc.
+    [Source: CoinPaprika]
 
     Example of response from API:
 
     .. code-block:: json
 
-        {
-            "id": "17398-cme-april-first-trade",
-            "date": "2018-04-02T00:00:00Z",
-            "date_to": "string",
-            "name": "CME: April First Trade",
-            "description": "First trade of Bitcoin futures contract for April 2018.",
-            "is_conference": false,
-            "link": "http://www.cmegroup.com/trading/equity-index/us-index/bitcoin_product_calendar_futures.html",
-            "proof_image_link": "https://static.coinpaprika.com/storage/cdn/event_images/16635.jpg"
-        }
-
-    .
+    {
+        "id": "17398-cme-april-first-trade",
+        "date": "2018-04-02T00:00:00Z",
+        "date_to": "string",
+        "name": "CME: April First Trade",
+        "description": "First trade of Bitcoin futures contract for April 2018.",
+        "is_conference": false,
+        "link": "http://www.cmegroup.com/trading/equity-index/us-index/bitcoin_product_calendar_futures.html",
+        "proof_image_link": "https://static.coinpaprika.com/storage/cdn/event_images/16635.jpg"
+    }
 
     Parameters
     ----------
-    coin_id: str
-        id of coin from coinpaprika e.g. Ethereum - > 'eth-ethereum'
+    symbol: str
+        Cryptocurrency symbol (e.g. BTC)
+    sortby: str
+        Key by which to sort data. Every column name is valid
+        (see for possible values:
+        https://api.coinpaprika.com/docs#tag/Coins/paths/~1coins~1%7Bcoin_id%7D~1events/get).
+    ascend: bool
+        Flag to sort data ascending
+
     Returns
     -------
-    pandas.DataFrame
+    pd.DataFrame
         Events found for given coin
         Columns: id, date , date_to, name, description, is_conference, link, proof_image_link
     """
+    # get coinpaprika id using crypto symbol
+    cp_id = get_coinpaprika_id(symbol)
 
     session = PaprikaSession()
-    res = session.make_request(session.ENDPOINTS["coin_events"].format(coin_id))
+    res = session.make_request(session.ENDPOINTS["coin_events"].format(cp_id))
     if not res or "error" in res:
         return pd.DataFrame()
     data = pd.DataFrame(res)
@@ -111,65 +123,96 @@ def get_coin_events_by_id(coin_id: str = "eth-ethereum") -> pd.DataFrame:
         lambda x: "\n".join(textwrap.wrap(x, width=40)) if isinstance(x, str) else x
     )
     data.drop(["id", "proof_image_link"], axis=1, inplace=True)
-    for col in ["date", "date_to"]:
-        data[col] = data[col].apply(
-            lambda x: x.replace("T", "\n") if isinstance(x, str) else x
-        )
-        data[col] = data[col].apply(
-            lambda x: x.replace("Z", "") if isinstance(x, str) else x
-        )
+    data["date"] = pd.to_datetime(
+        data["date"], format="%Y-%m-%dT%H:%M:%SZ"
+    ).dt.strftime("%Y-%m-%d %H:%M:%S")
+    data["date_to"] = pd.to_datetime(
+        data["date_to"], format="%Y-%m-%dT%H:%M:%SZ"
+    ).dt.strftime("%Y-%m-%d %H:%M:%S")
+    data = data.sort_values(by=sortby, ascending=ascend)
+
     return data
 
 
 @log_start_end(log=logger)
-def get_coin_exchanges_by_id(coin_id: str = "eth-ethereum") -> pd.DataFrame:
+def get_coin_exchanges_by_id(
+    symbol: str = "BTC",
+    sortby: str = "adjusted_volume_24h_share",
+    ascend: bool = True,
+) -> pd.DataFrame:
     """Get all exchanges for given coin id. [Source: CoinPaprika]
 
     Parameters
     ----------
-    coin_id: str
-        Identifier of Coin from CoinPaprika
+    symbol: str
+        Cryptocurrency symbol (e.g. BTC)
+    sortby: str
+        Key by which to sort data. Every column name is valid (see for possible values:
+        https://api.coinpaprika.com/v1).
+    ascend: bool
+        Flag to sort data ascending
 
     Returns
     -------
-    pandas.DataFrame
+    pd.DataFrame
         All exchanges for given coin
         Columns: id, name, adjusted_volume_24h_share, fiats
     """
+    # get coinpaprika id using crypto symbol
+    cp_id = get_coinpaprika_id(symbol)
 
     session = PaprikaSession()
-    res = session.make_request(session.ENDPOINTS["coin_exchanges"].format(coin_id))
+    res = session.make_request(session.ENDPOINTS["coin_exchanges"].format(cp_id))
     df = pd.DataFrame(res)
-    df["fiats"] = df["fiats"].copy().apply(lambda x: len([i["symbol"] for i in x if x]))
+
+    if "fiats" in df.columns.tolist():
+        df["fiats"] = (
+            df["fiats"].copy().apply(lambda x: len([i["symbol"] for i in x if x]))
+        )
+    df = df.sort_values(by=sortby, ascending=ascend)
     return df
 
 
 @log_start_end(log=logger)
 def get_coin_markets_by_id(
-    coin_id: str = "eth-ethereum", quotes: str = "USD"
+    symbol: str = "BTC",
+    quotes: str = "USD",
+    sortby: str = "pct_volume_share",
+    ascend: bool = True,
 ) -> pd.DataFrame:
     """All markets for given coin and currency [Source: CoinPaprika]
 
     Parameters
     ----------
-    coin_id: str
-        Coin Parpika identifier of coin e.g. eth-ethereum
+    symbol: str
+        Cryptocurrency symbol (e.g. BTC)
     quotes: str
         Comma separated list of quotes to return.
         Example: quotes=USD,BTC
         Allowed values:
-        BTC, ETH, USD, EUR, PLN, KRW, GBP, CAD, JPY, RUB, TRY, NZD, AUD, CHF, UAH, HKD, SGD, NGN, PHP, MXN, BRL,
-        THB, CLP, CNY, CZK, DKK, HUF, IDR, ILS, INR, MYR, NOK, PKR, SEK, TWD, ZAR, VND, BOB, COP, PEN, ARS, ISK
+        BTC, ETH, USD, EUR, PLN, KRW, GBP, CAD, JPY, RUB, TRY, NZD, AUD, CHF, UAH, HKD, SGD, NGN,
+        PHP, MXN, BRL, THB, CLP, CNY, CZK, DKK, HUF, IDR, ILS, INR, MYR, NOK, PKR, SEK, TWD, ZAR,
+        VND, BOB, COP, PEN, ARS, ISK
+    sortby: str
+        Key by which to sort data. Every column name is valid (see for possible values:
+        https://api.coinpaprika.com/v1).
+    ascend: bool
+        Flag to sort data ascending
 
     Returns
     -------
-    pandas.DataFrame
+    pd.DataFrame
         All markets for given coin and currency
     """
+    if sortby in ["volume", "price"]:
+        sortby = f"{str(symbol).lower()}_{sortby}"
+
+    # get coinpaprika id using crypto symbol
+    cp_id = get_coinpaprika_id(symbol)
 
     session = PaprikaSession()
     markets = session.make_request(
-        session.ENDPOINTS["coin_markets"].format(coin_id), quotes=quotes
+        session.ENDPOINTS["coin_markets"].format(cp_id), quotes=quotes
     )
     if "error" in markets:
         console.print(markets)
@@ -190,12 +233,14 @@ def get_coin_markets_by_id(
         dct["market_url"] = r.get("market_url")
         data.append(dct)
 
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+    df = df.sort_values(by=sortby, ascending=ascend)
+    return df
 
 
 @log_start_end(log=logger)
 def get_ohlc_historical(
-    coin_id: str = "eth-ethereum", quotes: str = "USD", days: int = 90
+    symbol: str = "eth-ethereum", quotes: str = "USD", days: int = 90
 ) -> pd.DataFrame:
     """
     Open/High/Low/Close values with volume and market_cap. [Source: CoinPaprika]
@@ -205,7 +250,7 @@ def get_ohlc_historical(
 
     Parameters
     ----------
-    coin_id: str
+    symbol: str
         Paprika coin identifier e.g. eth-ethereum
     quotes: str
         returned data quote (available values: usd btc)
@@ -214,7 +259,7 @@ def get_ohlc_historical(
 
     Returns
     -------
-    pandas.DataFrame
+    pd.DataFrame
         Open/High/Low/Close values with volume and market_cap.
     """
 
@@ -229,21 +274,21 @@ def get_ohlc_historical(
 
     session = PaprikaSession()
     data = session.make_request(
-        session.ENDPOINTS["ohlcv_hist"].format(coin_id),
+        session.ENDPOINTS["ohlcv_hist"].format(symbol),
         quotes=quotes,
         start=start,
         end=end,
     )
     if "error" in data:
-        console.print(data)
+        # console.print(
+        #    "Could not load data. Try use symbol (e.g., btc) instead of coin name (e.g., bitcoin)"
+        # )
         return pd.DataFrame()
     return pd.DataFrame(data)
 
 
 @log_start_end(log=logger)
-def get_tickers_info_for_coin(
-    coin_id: str = "btc-bitcoin", quotes: str = "USD"
-) -> pd.DataFrame:
+def get_tickers_info_for_coin(symbol: str = "BTC", quotes: str = "USD") -> pd.DataFrame:
     """Get all most important ticker related information for given coin id [Source: CoinPaprika]
 
     .. code-block:: json
@@ -284,21 +329,23 @@ def get_tickers_info_for_coin(
 
     Parameters
     ----------
-    coin_id: str
-        Id of coin from CoinPaprika
+    symbol: str
+        Cryptocurrency symbol (e.g. BTC)
     quotes: str
         Comma separated quotes to return e.g quotes = USD, BTC
 
     Returns
     -------
-    pandas.DataFrame
+    pd.DataFrame
         Most important ticker related information
         Columns: Metric, Value
     """
+    # get coinpaprika id using crypto symbol
+    cp_id = get_coinpaprika_id(symbol)
 
     session = PaprikaSession()
     tickers = session.make_request(
-        session.ENDPOINTS["ticker_info"].format(coin_id), quotes=quotes
+        session.ENDPOINTS["ticker_info"].format(cp_id), quotes=quotes
     )
 
     for key, date in tickers.items():
@@ -330,54 +377,23 @@ def get_tickers_info_for_coin(
 
 
 @log_start_end(log=logger)
-def validate_coin(coin: str, coins_dct: dict) -> Tuple[Optional[Any], Optional[Any]]:
-    """Helper method that validates if proper coin id or symbol was provided [Source: CoinPaprika]
-
-    Parameters
-    ----------
-    coin: str
-        id or symbol of coin for CoinPaprika
-    coins_dct: dict
-        dictionary of coins
-
-    Returns
-    -------
-    Tuple[str,str]
-        coin id, coin symbol
-    """
-
-    coin_found, symbol = None, None
-    if coin in coins_dct:
-        coin_found = coin
-        symbol = coins_dct.get(coin_found)
-    else:
-        for key, value in coins_dct.items():
-            if coin.upper() == value:
-                coin_found = key
-                symbol = value
-
-    if not coin_found:
-        console.print(f"[red]Could not find coin with given id: {coin}\n[/red]")
-        return None, None
-    return coin_found, symbol
-
-
-@log_start_end(log=logger)
-def basic_coin_info(coin_id: str = "btc-bitcoin") -> pd.DataFrame:
+def basic_coin_info(symbol: str = "BTC") -> pd.DataFrame:
     """Basic coin information [Source: CoinPaprika]
 
     Parameters
     ----------
-    coin_id: str
-        Coin id
+    symbol: str
+        Cryptocurrency symbol (e.g. BTC)
 
     Returns
     -------
     pd.DataFrame
         Metric, Value
     """
+    # get coinpaprika id using crypto symbol
+    cp_id = get_coinpaprika_id(symbol)
 
-    coin = get_coin(coin_id)
+    coin = get_coin(cp_id)
     tags = coin.get("tags") or []
     keys = [
         "id",
@@ -390,10 +406,7 @@ def basic_coin_info(coin_id: str = "btc-bitcoin") -> pd.DataFrame:
         "proof_type",
         "contract",
     ]
-    results = {}
-    for key in keys:
-        results[key] = coin.get(key)
-
+    results = {key: coin.get(key) for key in keys}
     try:
         tags = ", ".join(t.get("name") for t in tags)
         parent = coin.get("parent") or {}
@@ -409,3 +422,70 @@ def basic_coin_info(coin_id: str = "btc-bitcoin") -> pd.DataFrame:
     )
     df.dropna(subset=["Value"], inplace=True)
     return df
+
+
+@log_start_end(log=logger)
+def get_coin(symbol: str = "eth-ethereum") -> dict:
+    """Get coin by id [Source: CoinPaprika]
+
+    Parameters
+    ----------
+    symbol: str
+        id of coin from coinpaprika e.g. Ethereum - > 'eth-ethereum'
+    Returns
+    -------
+    dict
+        Coin response
+    """
+
+    session = PaprikaSession()
+    coin = session.make_request(session.ENDPOINTS["coin"].format(symbol))
+    return coin
+
+
+def get_coinpaprika_id(symbol: str) -> Optional[str]:
+    paprika_coins = get_coin_list()
+    paprika_coins_dict = dict(zip(paprika_coins.id, paprika_coins.symbol))
+    coinpaprika_id, _ = validate_coin(symbol.upper(), paprika_coins_dict)
+    return coinpaprika_id
+
+
+def get_coin_list() -> pd.DataFrame:
+    """Get list of all available coins on CoinPaprika  [Source: CoinPaprika]
+
+    Returns
+    -------
+    pandas.DataFrame
+        Available coins on CoinPaprika
+        rank, id, name, symbol, type
+    """
+
+    session = PaprikaSession()
+    coins = session.make_request(session.ENDPOINTS["coins"])
+    df = pd.DataFrame(coins)
+    df = df[df["is_active"]]
+    return df[["rank", "id", "name", "symbol", "type"]]
+
+
+def validate_coin(symbol: str, coins_dct: dict) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Helper method that validates if proper coin id or symbol was provided
+    [Source: CoinPaprika]
+
+    Parameters
+    ----------
+    symbol: str
+        id or symbol of coin for CoinPaprika
+    coins_dct: dict
+        dictionary of coins
+
+    Returns
+    -------
+    Tuple[Optional[str], Optional[str]]
+        coin id, coin symbol
+    """
+
+    for key, value in coins_dct.items():
+        if symbol == value:
+            return key, value.lower()
+    return None, None

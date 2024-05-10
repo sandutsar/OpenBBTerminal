@@ -1,37 +1,37 @@
 """ Business Insider Model """
+
 __docformat__ = "numpy"
 
 import logging
 
 import pandas as pd
-import requests
 from bs4 import BeautifulSoup
 
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_funcs import get_user_agent
+from openbb_terminal.helper_funcs import get_user_agent, request
 
 logger = logging.getLogger(__name__)
 
 
 @log_start_end(log=logger)
-def get_insider_activity(ticker: str) -> pd.DataFrame:
+def get_insider_activity(symbol: str) -> pd.DataFrame:
     """Get insider activity. [Source: Business Insider]
 
     Parameters
     ----------
-    ticker : str
-        Ticker to get insider activity data from
+    symbol : str
+        Ticker symbol to get insider activity data from
 
     Returns
     -------
     df_insider : pd.DataFrame
-        Get insider activity data
+        Insider activity data
     """
     url_market_business_insider = (
-        f"https://markets.businessinsider.com/stocks/{ticker.lower()}-stock"
+        f"https://markets.businessinsider.com/stocks/{symbol.lower()}-stock"
     )
     text_soup_market_business_insider = BeautifulSoup(
-        requests.get(
+        request(
             url_market_business_insider, headers={"User-Agent": get_user_agent()}
         ).text,
         "lxml",
@@ -61,8 +61,6 @@ def get_insider_activity(ticker: str) -> pd.DataFrame:
     )
 
     df_insider["Date"] = pd.to_datetime(df_insider["Date"])
-    df_insider = df_insider.set_index("Date")
-    df_insider = df_insider.sort_index(ascending=True)
 
     l_names = list()
     for s_name in text_soup_market_business_insider.findAll(
@@ -70,5 +68,6 @@ def get_insider_activity(ticker: str) -> pd.DataFrame:
     ):
         l_names.append(s_name.text.strip())
     df_insider["Insider"] = l_names
-
+    df_insider = df_insider.set_index("Date")
+    df_insider = df_insider.sort_index(ascending=True)
     return df_insider

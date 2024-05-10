@@ -1,4 +1,5 @@
 """BitQuery model"""
+
 __docformat__ = "numpy"
 
 import datetime
@@ -13,9 +14,10 @@ import requests
 from requests.adapters import HTTPAdapter
 from requests.exceptions import HTTPError
 
-from openbb_terminal import config_terminal as cfg
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.cryptocurrency.dataframe_helpers import prettify_column_names
+from openbb_terminal.decorators import check_api_key, log_start_end
 from openbb_terminal.rich_config import console
-from openbb_terminal.decorators import log_start_end
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +155,7 @@ def _extract_dex_trades(data: dict) -> pd.DataFrame:
 
 
 @log_start_end(log=logger)
+@check_api_key(["API_BITQUERY_KEY"])
 def query_graph(url: str, query: str) -> dict:
     """Helper methods for querying graphql api. [Source: https://bitquery.io/]
 
@@ -165,13 +168,13 @@ def query_graph(url: str, query: str) -> dict:
 
     Returns
     -------
-    dict:
+    dict
         Dictionary with response data
     """
 
     session = requests.Session()
     session.mount("https://", HTTPAdapter(max_retries=5))
-    headers = {"x-api-key": cfg.API_BITQUERY_KEY}
+    headers = {"x-api-key": get_current_user().credentials.API_BITQUERY_KEY}  # type: ignore
     timeout = 30
 
     try:
@@ -181,24 +184,24 @@ def query_graph(url: str, query: str) -> dict:
     except requests.Timeout as e:
         logger.exception("BitQuery timeout")
         raise BitQueryTimeoutException(
-            f"BitQuery API didn't respond within {timeout} seconds.\n"
+            f"BitQuery API didn't respond within {timeout} seconds."
         ) from e
 
     if response.status_code == 500:
-        raise HTTPError(f"Internal sever error {response.reason}")
+        raise HTTPError(f"Internal sever error {response.reason}")  # type: ignore
 
     if not 200 <= response.status_code < 300:
         raise BitQueryApiKeyException(
             f"Invalid Authentication: {response.status_code}. "
-            f"Please visit https://bitquery.io/pricing and generate you free api key\n"
+            f"Please visit https://bitquery.io/pricing and generate you free api key"
         )
     try:
         data = response.json()
         if "error" in data:
-            raise ValueError(f"Invalid Response: {data['error']}\n")
+            raise ValueError(f"Invalid Response: {data['error']}")
     except Exception as e:
         logger.exception("Invalid Response: %s", str(e))
-        raise ValueError(f"Invalid Response: {response.text}\n") from e
+        raise ValueError(f"Invalid Response: {response.text}") from e
     return data["data"]
 
 
@@ -224,15 +227,16 @@ def get_erc20_tokens() -> pd.DataFrame:
 
 
 @log_start_end(log=logger)
-def find_token_address(token: str) -> Optional[str]:
+def find_token_address(symbol: str) -> Optional[str]:
     """Helper methods that search for ERC20 coin base on provided symbol or token address.
-    If erc20 token address is provided, then function checks if it's proper address and returns it back.
-    In other case mapping data is loaded from file (or cache), and function lookup for belonging token address.
+    If erc20 token address is provided, then checks if it's proper address and returns it back.
+    In other case mapping data is loaded from file, and lookup for belonging token address.
 
     Parameters
     ----------
-    token: str
-        ERC20 token symbol e.g. UNI, SUSHI, ETH, WBTC or token address e.g. 0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48
+    symbol: str
+        ERC20 token symbol e.g. UNI, SUSHI, ETH, WBTC or token address e.g.
+        0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48
 
     Returns
     -------
@@ -240,13 +244,13 @@ def find_token_address(token: str) -> Optional[str]:
         ERC20 token address, or None if nothing found.
     """
 
-    if token.startswith("0x") and len(token) >= 38:
-        return token
+    if symbol.startswith("0x") and len(symbol) >= 38:
+        return symbol
 
-    if token == "ETH":
-        return token
+    if symbol == "ETH":
+        return symbol
 
-    token = "WBTC" if token == "BTC" else token
+    token = "WBTC" if symbol == "BTC" else symbol
     tokens_map: pd.DataFrame = get_erc20_tokens()
 
     found_token = tokens_map.loc[tokens_map["symbol"] == token]
@@ -259,7 +263,10 @@ def find_token_address(token: str) -> Optional[str]:
 
 @log_start_end(log=logger)
 def get_dex_trades_by_exchange(
-    trade_amount_currency: str = "USD", limit: int = 90
+    trade_amount_currency: str = "USD",
+    limit: int = 90,
+    sortby: str = "tradeAmount",
+    ascend: bool = True,
 ) -> pd.DataFrame:
     """Get trades on Decentralized Exchanges aggregated by DEX [Source: https://graphql.bitquery.io/]
 
@@ -270,6 +277,10 @@ def get_dex_trades_by_exchange(
     limit:  int
         Last n days to query data. Maximum 365 (bigger numbers can cause timeouts
         on server side)
+    sortby: str
+        Key by which to sort data
+    ascend: bool
+        Flag to sort data ascending
 
     Returns
     -------
@@ -285,40 +296,48 @@ def get_dex_trades_by_exchange(
         trade_amount_currency = "USD"
 
     query = f"""
-            {{
-          ethereum {{
-            dexTrades(options: {{limit: 40, desc: ["count"]}}
-             date: {{since: "{dt}"}}
-            ) {{
-              exchange {{
-              name
-            }}
-              count
-              tradeAmount(in: {trade_amount_currency})
-            }}
-          }}
+        {{
+        ethereum {{
+        dexTrades(options: {{limit: 40, desc: ["count"]}}
+            date: {{since: "{dt}"}}
+        ) {{
+            exchange {{
+            name
         }}
-        """
+            count
+            tradeAmount(in: {trade_amount_currency})
+        }}
+        }}
+    }}
+    """
 
     try:
         data = query_graph(BQ_URL, query)
     except BitQueryApiKeyException:
         logger.exception("Invalid API Key")
         console.print("[red]Invalid API Key[/red]\n")
+        return pd.DataFrame()
+
+    if not data:
+        return pd.DataFrame()
 
     df = _extract_dex_trades(data)
     df.columns = ["trades", "tradeAmount", "exchange"]
     df = df[~df["exchange"].isin([None, np.NaN, ""])]
-    return df[["exchange", "trades", "tradeAmount"]].sort_values(
+    df = df[["exchange", "trades", "tradeAmount"]].sort_values(
         by="tradeAmount", ascending=True
     )
+    df = df.sort_values(by=sortby, ascending=ascend)
+    df.columns = prettify_column_names(df.columns)
+    return df
 
 
 @log_start_end(log=logger)
 def get_dex_trades_monthly(
-    trade_amount_currency: str = "USD", limit: int = 90
+    trade_amount_currency: str = "USD", limit: int = 90, ascend: bool = True
 ) -> pd.DataFrame:
-    """Get list of trades on Decentralized Exchanges monthly aggregated. [Source: https://graphql.bitquery.io/]
+    """Get list of trades on Decentralized Exchanges monthly aggregated.
+    [Source: https://graphql.bitquery.io/]
 
     Parameters
     ----------
@@ -327,6 +346,8 @@ def get_dex_trades_monthly(
     limit:  int
         Last n days to query data. Maximum 365 (bigger numbers can cause timeouts
         on server side)
+    ascend: bool
+        Flag to sort data ascending
 
     Returns
     -------
@@ -342,22 +363,22 @@ def get_dex_trades_monthly(
     )
 
     query = f"""
-        {{
-          ethereum {{
-            dexTrades(
-              options: {{desc: ["date.year", "date.month", "count"]}}
-              date: {{since: "{dt}"}}
-            ) {{
-              count
-              date {{
-                month
-                year
-              }}
-              tradeAmount(in: {trade_amount_currency})
+    {{
+        ethereum {{
+        dexTrades(
+            options: {{desc: ["date.year", "date.month", "count"]}}
+            date: {{since: "{dt}"}}
+        ) {{
+            count
+            date {{
+            month
+            year
             }}
-          }}
+            tradeAmount(in: {trade_amount_currency})
         }}
-        """
+        }}
+    }}
+    """
     try:
         data = query_graph(BQ_URL, query)
     except BitQueryApiKeyException:
@@ -372,72 +393,81 @@ def get_dex_trades_monthly(
         lambda x: datetime.date(int(x["date.year"]), int(x["date.month"]), 1), axis=1
     )
     df.rename(columns={"count": "trades"}, inplace=True)
-    return df[["date", "trades", "tradeAmount"]]
+    df = df[["date", "trades", "tradeAmount"]]
+    df = df.sort_values(by="date", ascending=ascend)
+    df.columns = prettify_column_names(df.columns)
+    return df
 
 
 @log_start_end(log=logger)
 def get_daily_dex_volume_for_given_pair(
     limit: int = 100,
-    token: str = "UNI",
-    vs: str = "USDT",
+    symbol: str = "UNI",
+    to_symbol: str = "USDT",
+    sortby: str = "date",
+    ascend: bool = True,
 ) -> pd.DataFrame:
     """Get daily volume for given pair [Source: https://graphql.bitquery.io/]
 
     Parameters
-    -------
+    ----------
     limit:  int
         Last n days to query data
-    token: str
+    symbol: str
         ERC20 token symbol
-    vs: str
+    to_symbol: str
         Quote currency.
+    sortby: str
+        Key by which to sort data
+    ascend: bool
+        Flag to sort data ascending
 
     Returns
     -------
     pd.DataFrame
-         Daily volume for given pair
+        Daily volume for given pair
     """
 
     dt = (datetime.date.today() - datetime.timedelta(min(limit, 365))).strftime(
         "%Y-%m-%d"
     )
 
-    base, quote = find_token_address(token), find_token_address(vs)
+    base, quote = find_token_address(symbol), find_token_address(to_symbol)
     if not base or not quote:
         raise ValueError("Provided coin or quote currency doesn't exist\n")
 
     query = f"""
-         {{
-          ethereum(network: ethereum) {{
-            dexTrades(
-              options: {{desc: ["timeInterval.day", "trades"]}}
-              baseCurrency: {{is: "{base}"}}
-              quoteCurrency: {{is: "{quote}"}}
-              date: {{since: "{dt}" }}
-            ) {{
-              timeInterval {{
-                day(count: 1)
-              }}
-              baseCurrency {{
-                symbol
-              }}
-              quoteCurrency {{
-                symbol
-              }}
-              exchange {{
-                fullName
-              }}
-              trades: count
-              tradeAmount(in: USD)
-              quotePrice
-              maximum_price: quotePrice(calculate: maximum)
-              minimum_price: quotePrice(calculate: minimum)
-              open_price: minimum(of: block, get: quote_price)
-              close_price: maximum(of: block, get: quote_price)
+        {{
+        ethereum(network: ethereum) {{
+        dexTrades(
+            options: {{desc: ["timeInterval.day", "trades"]}}
+            baseCurrency: {{is: "{base}"}}
+            quoteCurrency: {{is: "{quote}"}}
+            date: {{since: "{dt}" }}
+        ) {{
+            timeInterval {{
+            day(count: 1)
             }}
-          }}
+            baseCurrency {{
+            symbol
+            }}
+            quoteCurrency {{
+            symbol
+            }}
+            exchange {{
+            fullName
+            }}
+            trades: count
+            tradeAmount(in: USD)
+            quotePrice
+            maximum_price: quotePrice(calculate: maximum)
+            minimum_price: quotePrice(calculate: minimum)
+            open_price: minimum(of: block, get: quote_price)
+            close_price: maximum(of: block, get: quote_price)
         }}
-        """
+        }}
+    }}
+    """
 
     try:
         data = query_graph(BQ_URL, query)
@@ -463,7 +493,7 @@ def get_daily_dex_volume_for_given_pair(
         "quote",
         "exchange",
     ]
-    return df[
+    df = df[
         [
             "date",
             "exchange",
@@ -476,22 +506,31 @@ def get_daily_dex_volume_for_given_pair(
             "tradeAmount",
             "trades",
         ]
-    ].sort_values(by="date", ascending=False)
+    ]
+    df = df.sort_values(by=sortby, ascending=ascend)
+    df.columns = prettify_column_names(df.columns)
+    return df
 
 
 @log_start_end(log=logger)
 def get_token_volume_on_dexes(
-    token: str = "UNI",
+    symbol: str = "UNI",
     trade_amount_currency: str = "USD",
+    sortby: str = "tradeAmount",
+    ascend: bool = True,
 ) -> pd.DataFrame:
     """Get token volume on different Decentralized Exchanges. [Source: https://graphql.bitquery.io/]
 
     Parameters
     ----------
-    token: str
+    symbol: str
         ERC20 token symbol.
     trade_amount_currency: str
         Currency to display trade amount in.
+    sortby: str
+        Key by which to sort data
+    ascend: bool
+        Flag to sort data ascending
 
     Returns
     -------
@@ -502,30 +541,30 @@ def get_token_volume_on_dexes(
     if trade_amount_currency not in CURRENCIES:
         trade_amount_currency = "USD"
 
-    token_address = find_token_address(token)
+    token_address = find_token_address(symbol)
     if token_address is None:
-        raise ValueError(f"Couldn't find token with symbol {token}\n")
+        raise ValueError(f"Couldn't find token with symbol {symbol}\n")
     query = f"""
-        {{
-           ethereum {{
-            dexTrades(
-              baseCurrency: {{is:"{token_address}"}}
-            ) {{
-                  baseCurrency{{
-        symbol
-      }}
-              exchange {{
-              name
-              fullName
-              }}
-              count
-              tradeAmount(in: {trade_amount_currency})
+    {{
+        ethereum {{
+        dexTrades(
+            baseCurrency: {{is:"{token_address}"}}
+        ) {{
+                baseCurrency{{
+    symbol
+    }}
+            exchange {{
+            name
+            fullName
+            }}
+            count
+            tradeAmount(in: {trade_amount_currency})
 
-            }}
-            }}
-            }}
+        }}
+        }}
+        }}
 
-        """
+    """
     try:
         data = query_graph(BQ_URL, query)
     except BitQueryApiKeyException:
@@ -538,21 +577,32 @@ def get_token_volume_on_dexes(
 
     df = _extract_dex_trades(data)[["exchange.fullName", "tradeAmount", "count"]]
     df.columns = LT_FILTERS
-    return df[~df["exchange"].str.startswith("<")].sort_values(
-        by="tradeAmount", ascending=False
-    )
+    df = df[~df["exchange"].str.startswith("<")]
+    df = df.sort_values(by=sortby, ascending=ascend)
+    df.columns = prettify_column_names(df.columns)
+    return df
 
 
 @log_start_end(log=logger)
-def get_ethereum_unique_senders(interval: str = "day", limit: int = 90) -> pd.DataFrame:
+def get_ethereum_unique_senders(
+    interval: str = "day",
+    limit: int = 90,
+    sortby: str = "tradeAmount",
+    ascend: bool = True,
+) -> pd.DataFrame:
     """Get number of unique ethereum addresses which made a transaction in given time interval.
 
     Parameters
     ----------
     interval: str
-        Time interval in which count unique ethereum addresses which made transaction. day, month or week.
+        Time interval in which count unique ethereum addresses which made transaction. day,
+        month or week.
     limit: int
         Number of records for data query.
+    sortby: str
+        Key by which to sort data
+    ascend: bool
+        Flag to sort data ascending
 
     Returns
     -------
@@ -574,21 +624,21 @@ def get_ethereum_unique_senders(interval: str = "day", limit: int = 90) -> pd.Da
     dt = (datetime.date.today() - datetime.timedelta(days)).strftime("%Y-%m-%d")
 
     query = f"""
-     {{
-          ethereum(network: ethereum) {{
+    {{
+        ethereum(network: ethereum) {{
             transactions(options: {{desc: "date.date"}}, date: {{since: "{dt}"}}) {{
-              uniqueSenders: count(uniq: senders)
-              date {{
-                date:startOfInterval(unit: {interval})
-              }}
+                uniqueSenders: count(uniq: senders)
+                date {{
+                    date:startOfInterval(unit: {interval})
+                }}
                 averageGasPrice: gasPrice(calculate: average)
-                  mediumGasPrice: gasPrice(calculate: median)
-                  maximumGasPrice: gasPrice(calculate: maximum)
-                  transactions: count
+                mediumGasPrice: gasPrice(calculate: median)
+                maximumGasPrice: gasPrice(calculate: maximum)
+                transactions: count
             }}
-          }}
         }}
-        """
+    }}
+    """
 
     try:
         data = query_graph(BQ_URL, query)
@@ -601,12 +651,19 @@ def get_ethereum_unique_senders(interval: str = "day", limit: int = 90) -> pd.Da
 
     df = pd.DataFrame(data["ethereum"]["transactions"])
     df["date"] = df["date"].apply(lambda x: x["date"])
-    return df[UEAT_FILTERS]
+    df = df[UEAT_FILTERS]
+    df = df.sort_values(by=sortby, ascending=ascend)
+    df.columns = prettify_column_names(df.columns)
+    return df
 
 
 @log_start_end(log=logger)
 def get_most_traded_pairs(
-    network: str = "ethereum", exchange: str = "Uniswap", limit: int = 90
+    network: str = "ethereum",
+    exchange: str = "Uniswap",
+    limit: int = 90,
+    sortby: str = "tradeAmount",
+    ascend: bool = True,
 ) -> pd.DataFrame:
     """Get most traded crypto pairs on given decentralized exchange in chosen time period.
     [Source: https://graphql.bitquery.io/]
@@ -615,34 +672,39 @@ def get_most_traded_pairs(
     ----------
     network: str
         EVM network. One from list: bsc (binance smart chain), ethereum or matic
-    exchange:
+    exchange: st
         Decentralized exchange name
-    limit:
+    limit: int
         Number of days taken into calculation account.
+    sortby: str
+        Key by which to sort data
+    ascend: bool
+        Flag to sort data ascending
 
     Returns
     -------
-
+    pd.DataFrame
+        Most traded crypto pairs on given decentralized exchange in chosen time period.
     """
 
     dt = (datetime.date.today() - datetime.timedelta(limit)).strftime("%Y-%m-%d")
     exchange = DECENTRALIZED_EXCHANGES_MAP.get(exchange, "Uniswap")
     query = f"""
     {{
-    ethereum(network: {network}){{
-    dexTrades(options: {{limit: 100, desc: "tradeAmount"}},
-      exchangeName: {{is: "{exchange}"}}
-      date: {{since: "{dt}"}}) {{
-      buyCurrency {{
-        symbol
-      }}
-      sellCurrency{{
-        symbol
-      }}
-      trades: count
-      tradeAmount(in: USD)
-    }}
-    }}
+        ethereum(network: {network}){{
+            dexTrades(options: {{limit: 100, desc: "tradeAmount"}},
+            exchangeName: {{is: "{exchange}"}}
+            date: {{since: "{dt}"}}) {{
+                buyCurrency {{
+                    symbol
+                }}
+                sellCurrency{{
+                    symbol
+                }}
+                trades: count
+                tradeAmount(in: USD)
+            }}
+        }}
     }}
     """
     try:
@@ -656,56 +718,67 @@ def get_most_traded_pairs(
 
     df = _extract_dex_trades(data)
     df.columns = ["trades", "tradeAmount", "base", "quoted"]
-    return df[TTCP_FILTERS]
+    df = df[TTCP_FILTERS]
+    df = df.sort_values(by=sortby, ascending=ascend)
+    df.columns = prettify_column_names(df.columns)
+    return df
 
 
 @log_start_end(log=logger)
 def get_spread_for_crypto_pair(
-    token: str = "WETH", vs: str = "USDT", limit: int = 30
+    symbol: str = "WETH",
+    to_symbol: str = "USDT",
+    limit: int = 10,
+    sortby: str = "date",
+    ascend: bool = True,
 ) -> pd.DataFrame:
     """Get an average bid and ask prices, average spread for given crypto pair for chosen time period.
-       [Source: https://graphql.bitquery.io/]
+        [Source: https://graphql.bitquery.io/]
 
     Parameters
     ----------
+    symbol: str
+        ERC20 token symbol
+    to_symbol: str
+        Quoted currency.
     limit:  int
         Last n days to query data
-    token: str
-        ERC20 token symbol
-    vs: str
-        Quoted currency.
+    sortby: str
+        Key by which to sort data
+    ascend: bool
+        Flag to sort data ascending
 
     Returns
     -------
     pd.DataFrame
-       Average bid and ask prices, spread for given crypto pair for chosen time period
+        Average bid and ask prices, spread for given crypto pair for chosen time period
     """
 
     dt = (datetime.date.today() - datetime.timedelta(limit)).strftime("%Y-%m-%d")
-    base, quote = find_token_address(token), find_token_address(vs)
+    base, quote = find_token_address(symbol), find_token_address(to_symbol)
 
     if not base or not quote:
         raise ValueError("Provided coin or quote currency doesn't exist\n")
 
     query = f"""
-        {{
-      ethereum(network: ethereum){{
-      dexTrades(
-          date: {{since:"{dt}"}}
-          baseCurrency: {{is: "{base}"}},
-          quoteCurrency: {{is: "{quote}"}}) {{
-          date {{date}}
-          baseCurrency {{symbol}}
-          baseAmount
-          quoteCurrency {{
-            symbol
-          }}
-          quoteAmount
-          trades: count
-          quotePrice
-          side
+    {{
+        ethereum(network: ethereum){{
+            dexTrades(
+                date: {{since:"{dt}"}}
+                baseCurrency: {{is: "{base}"}},
+                quoteCurrency: {{is: "{quote}"}}) {{
+                    date {{date}}
+                    baseCurrency {{symbol}}
+                    baseAmount
+                    quoteCurrency {{
+                        symbol
+                    }}
+                    quoteAmount
+                    trades: count
+                    quotePrice
+                    side
+                }}
         }}
-      }}
     }}
     """
     try:
@@ -729,7 +802,7 @@ def get_spread_for_crypto_pair(
     daily_spread["dailySpread"] = abs(
         daily_spread["averageBidPrice"] - daily_spread["averageAskPrice"]
     )
-    return daily_spread[
+    df = daily_spread[
         [
             "date",
             "baseCurrency",
@@ -738,7 +811,13 @@ def get_spread_for_crypto_pair(
             "averageBidPrice",
             "averageAskPrice",
         ]
-    ].sort_values(by="date", ascending=True)
+    ]
+    df = df.sort_values(by=sortby, ascending=ascend)
+    df.columns = prettify_column_names(df.columns)
+    return df
 
 
-POSSIBLE_CRYPTOS = list(get_erc20_tokens()["symbol"].unique())
+@log_start_end(log=logger)
+def get_possible_crypto_symbols():
+    """Get possible crypto symbols."""
+    return list(get_erc20_tokens()["symbol"].unique())

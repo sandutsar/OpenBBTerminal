@@ -1,135 +1,135 @@
 """ EconDB View """
+
 __docformat__ = "numpy"
-# pylint:disable=too-many-arguments
-from datetime import datetime
+# pylint:disable=too-many-arguments,unused-argument
 import logging
 import os
-from textwrap import fill
-from typing import Optional, List, Dict
+from typing import Optional, Union
 
-import pandas as pd
-from matplotlib import pyplot as plt
-
-from openbb_terminal.config_plot import PLOT_DPI
-from openbb_terminal.config_terminal import theme
+from openbb_terminal import OpenBBFigure
 from openbb_terminal.decorators import log_start_end
 from openbb_terminal.economy import econdb_model
-from openbb_terminal.helper_funcs import (
-    plot_autoscale,
-    print_rich_table,
-    export_data,
-)
-from openbb_terminal.rich_config import console
+from openbb_terminal.helper_funcs import export_data, print_rich_table
 
 logger = logging.getLogger(__name__)
 
 
 @log_start_end(log=logger)
 def show_macro_data(
-    parameters: list,
-    countries: list,
+    parameters: Optional[list] = None,
+    countries: Optional[list] = None,
+    transform: str = "",
     start_date: str = "1900-01-01",
-    end_date=datetime.today().date(),
-    convert_currency=False,
+    end_date: Optional[str] = None,
+    symbol: str = "",
     raw: bool = False,
-    external_axes: Optional[List[plt.axes]] = None,
+    external_axes: bool = False,
     export: str = "",
-):
-    """Show the received nacro data about a company [Source: EconDB]
+    sheet_name: Optional[str] = None,
+    limit: int = 10,
+) -> Union[OpenBBFigure, None]:
+    """Show the received macro data about a company [Source: EconDB]
 
     Parameters
     ----------
     parameters: list
-        The type of data you wish to acquire
+        The type of data you wish to display. Available parameters can be accessed through get_macro_parameters().
     countries : list
-       the selected country or countries
+        The selected country or countries. Available countries can be accessed through get_macro_countries().
+    transform : str
+        select data transformation from:
+            '' - no transformation
+            'TPOP' - total percentage change on period,
+            'TOYA' - total percentage since 1 year ago,
+            'TUSD' - level USD,
+            'TPGP' - Percentage of GDP,
+            'TNOR' - Start = 100
     start_date : str
         The starting date, format "YEAR-MONTH-DAY", i.e. 2010-12-31.
-    end_date : str
+    end_date : Optional[str]
         The end date, format "YEAR-MONTH-DAY", i.e. 2020-06-05.
-    convert_currency : str
+    symbol : str
         In what currency you wish to convert all values.
     raw : bool
         Whether to display the raw output.
-    external_axes: Optional[List[plt.axes]]
-        External axes to plot on
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     export : str
         Export data to csv,json,xlsx or png,jpg,pdf,svg file
 
     Returns
-    ----------
+    -------
     Plots the Series.
     """
-    country_data_df, units = econdb_model.get_aggregated_macro_data(
-        parameters, countries, start_date, end_date, convert_currency
+
+    if parameters is None:
+        parameters = ["CPI"]
+    if countries is None:
+        countries = ["United_States"]
+
+    df_rounded, units, denomination = econdb_model.get_aggregated_macro_data(
+        parameters, countries, transform, start_date, end_date, symbol
     )
 
-    if external_axes is None:
-        _, ax = plt.subplots(figsize=plot_autoscale(), dpi=PLOT_DPI)
-    else:
-        ax = external_axes[0]
+    fig = OpenBBFigure(yaxis=dict(side="right"))
 
-    maximum_value = country_data_df.max().max()
-
-    if maximum_value > 1_000_000_000_000:
-        df_rounded = country_data_df / 1_000_000_000_000
-        denomination = " [in Trillions]"
-    elif maximum_value > 1_000_000_000:
-        df_rounded = country_data_df / 1_000_000_000
-        denomination = " [in Billions]"
-    elif maximum_value > 1_000_000:
-        df_rounded = country_data_df / 1_000_000
-        denomination = " [in Millions]"
-    elif maximum_value > 1_000:
-        df_rounded = country_data_df / 1_000
-        denomination = " [in Thousands]"
-    else:
-        df_rounded = country_data_df
-        denomination = ""
-
-    legend = []
     for column in df_rounded.columns:
-        parameter_units = f"Units: {units[column[0]][column[1]]}"
+        if transform:
+            if transform in ["TPOP", "TOYA", "TPGP"]:
+                parameter_units = "Units: %"
+            elif transform in ["TUSD", "TNOR"]:
+                parameter_units = "Units: Level"
+        else:
+            parameter_units = f"Units: {units[column[0]][column[1]]}"
         country_label = column[0].replace("_", " ")
         parameter_label = econdb_model.PARAMETERS[column[1]]["name"]
         if len(parameters) > 1 and len(countries) > 1:
-            ax.plot(df_rounded[column])
-            ax.set_title(f"Macro data{denomination}", wrap=True, fontsize=12)
-            legend.append(f"{country_label} [{parameter_label}, {parameter_units}]")
-        elif len(parameters) > 1:
-            ax.plot(df_rounded[column])
-            ax.set_title(f"{country_label}{denomination}", wrap=True, fontsize=12)
-            legend.append(f"{parameter_label} [{parameter_units}]")
-        elif len(countries) > 1:
-            ax.plot(df_rounded[column])
-            ax.set_title(f"{parameter_label}{denomination}", wrap=True, fontsize=12)
-            legend.append(f"{country_label} [{parameter_units}]")
-        else:
-            ax.plot(df_rounded[column])
-            ax.set_title(
-                f"{parameter_label} of {country_label}{denomination} [{parameter_units}]",
-                wrap=True,
-                fontsize=12,
+            fig.add_scatter(
+                x=df_rounded.index,
+                y=df_rounded[column],
+                mode="lines",
+                name=f"{country_label} [{parameter_label}, {parameter_units}]",
             )
-
-    if len(parameters) > 1 or len(countries) > 1:
-        ax.legend(
-            [fill(label, 45) for label in legend],
-            bbox_to_anchor=(0, 0.40, 1, -0.52),
-            loc="upper right",
-            mode="expand",
-            prop={"size": 9},
-            ncol=2,
-        )
+            fig.set_title(f"Macro data{denomination}")
+        elif len(parameters) > 1:
+            fig.add_scatter(
+                x=df_rounded.index,
+                y=df_rounded[column],
+                mode="lines",
+                name=f"{parameter_label} [{parameter_units}]",
+            )
+            fig.set_title(f"{country_label}{denomination}")
+        elif len(countries) > 1:
+            fig.add_scatter(
+                x=df_rounded.index,
+                y=df_rounded[column],
+                mode="lines",
+                name=f"{country_label} [{parameter_units}]",
+            )
+            fig.set_title(f"{parameter_label}{denomination}")
+        else:
+            fig.add_scatter(
+                x=df_rounded.index,
+                y=df_rounded[column],
+                mode="lines",
+                name=f"{country_label} [{parameter_label}, {parameter_units}]",
+            )
+            fig.set_title(
+                f"{parameter_label} of {country_label}{denomination} [{parameter_units}]"
+            )
 
     df_rounded.columns = ["_".join(column) for column in df_rounded.columns]
 
     if raw:
+        # was a -iloc so we need to flip the index as we use head
+        df_rounded = df_rounded.sort_index(ascending=False)
         print_rich_table(
-            df_rounded.fillna("-").iloc[-10:],
+            df_rounded.fillna("-"),
             headers=list(df_rounded.columns),
             show_index=True,
             title=f"Macro Data {denomination}",
+            export=bool(export),
+            limit=limit,
         )
 
     if export:
@@ -138,91 +138,85 @@ def show_macro_data(
             os.path.dirname(os.path.abspath(__file__)),
             "macro_data",
             df_rounded,
+            sheet_name,
+            fig,
         )
 
-    theme.style_primary_axis(ax)
-
-    if external_axes is None:
-        theme.visualize_output()
+    return fig.show(external=raw or external_axes)
 
 
 @log_start_end(log=logger)
 def show_treasuries(
-    types: list,
-    maturities: list,
-    frequency: str,
-    start_date: str = None,
-    end_date: str = None,
+    instruments: Optional[list] = None,
+    maturities: Optional[list] = None,
+    frequency: str = "monthly",
+    start_date: str = "1900-01-01",
+    end_date: Optional[str] = None,
     raw: bool = False,
-    external_axes: Optional[List[plt.axes]] = None,
+    external_axes: bool = False,
     export: str = "",
-):
-    """Obtain U.S. Treasury Rates [Source: EconDB]
+    sheet_name: Optional[str] = None,
+    limit: int = 10,
+) -> Union[OpenBBFigure, None]:
+    """Display U.S. Treasury rates [Source: EconDB]
 
     Parameters
     ----------
-    types: list
-        The type(s) of treasuries, nominal, inflation-adjusted or secondary market.
+    instruments: list
+        Type(s) of treasuries, nominal, inflation-adjusted or secondary market.
+        Available options can be accessed through economy.treasury_maturities().
     maturities : list
-       the maturities you wish to view.
+        Treasury maturities to display. Available options can be accessed through economy.treasury_maturities().
     frequency : str
-        The frequency of the data, this can be daily, weekly, monthly or annually
+        Frequency of the data, this can be daily, weekly, monthly or annually
     start_date : str
-        The starting date, format "YEAR-MONTH-DAY", i.e. 2010-12-31.
-    end_date : str
-        The end date, format "YEAR-MONTH-DAY", i.e. 2020-06-05.
-    store : bool
-        Whether to prevent plotting the data.
+        Starting date, format "YEAR-MONTH-DAY", i.e. 2010-12-31.
+    end_date : Optional[str]
+        End date, format "YEAR-MONTH-DAY", i.e. 2020-06-05.
     raw : bool
         Whether to display the raw output.
-    external_axes: Optional[List[plt.axes]]
-        External axes to plot on
+    external_axes : bool, optional
+        Whether to return the figure object or not, by default False
     export : str
         Export data to csv,json,xlsx or png,jpg,pdf,svg file
 
     Returns
-    ----------
+    -------
     Plots the Treasury Series.
     """
 
+    if instruments is None:
+        instruments = ["nominal"]
+    if maturities is None:
+        maturities = ["10y"]
+
     treasury_data = econdb_model.get_treasuries(
-        types, maturities, frequency, start_date, end_date
+        instruments, maturities, frequency, start_date, end_date
+    )
+    fig = OpenBBFigure(
+        yaxis=dict(side="right", title="Yield (%)"),
+        title="U.S. Treasuries",
     )
 
-    if external_axes is None:
-        _, ax = plt.subplots(figsize=plot_autoscale(), dpi=PLOT_DPI)
-    else:
-        ax = external_axes[0]
-
-    for treasury, maturities_data in treasury_data.items():
-        for maturity in maturities_data:
-            ax.plot(maturities_data[maturity], label=f"{treasury} [{maturity}]")
-
-    ax.set_title("U.S. Treasuries")
-    ax.legend(
-        bbox_to_anchor=(0, 0.40, 1, -0.52),
-        loc="upper right",
-        mode="expand",
-        borderaxespad=0,
-        prop={"size": 9},
-        ncol=3,
-    )
-
-    theme.style_primary_axis(ax)
-
-    if external_axes is None:
-        theme.visualize_output()
-
-    df = pd.DataFrame.from_dict(treasury_data, orient="index").stack().to_frame()
-    df = pd.DataFrame(df[0].values.tolist(), index=df.index).T
-    df.columns = ["_".join(column) for column in df.columns]
+    for col in treasury_data.columns:
+        col_label = col.split("_")
+        fig.add_scatter(
+            x=treasury_data.index,
+            y=treasury_data[col],
+            mode="lines",
+            name=f"{col_label[0]} [{col_label[1]}]",
+        )
 
     if raw:
+        # was a -iloc so we need to flip the index as we use head
+        treasury_data = treasury_data.sort_index(ascending=False)
         print_rich_table(
-            df.iloc[-10:],
-            headers=list(df.columns),
+            treasury_data,
+            headers=list(treasury_data.columns),
             show_index=True,
             title="U.S. Treasuries",
+            export=bool(export),
+            limit=limit,
         )
 
     if export:
@@ -230,25 +224,24 @@ def show_treasuries(
             export,
             os.path.dirname(os.path.abspath(__file__)),
             "treasuries_data",
-            df,
+            treasury_data / 100,
+            sheet_name,
+            fig,
         )
+
+    return fig.show(external=raw or external_axes)
 
 
 @log_start_end(log=logger)
-def show_treasury_maturities(treasuries: Dict):
-    """Obtain treasury maturity options [Source: EconDB]
-
-    Parameters
-    ----------
-    treasuries: dict
-        A dictionary containing the options structured {instrument : {maturities: {abbreviation : name}}}
+def show_treasury_maturities():
+    """Get treasury maturity options [Source: EconDB]
 
     Returns
-    ----------
+    -------
     A table containing the instruments and maturities.
     """
 
-    instrument_maturities = econdb_model.obtain_treasury_maturities(treasuries)
+    instrument_maturities = econdb_model.get_treasury_maturities()
 
     print_rich_table(
         instrument_maturities,
@@ -257,5 +250,3 @@ def show_treasury_maturities(treasuries: Dict):
         index_name="Instrument",
         title="Maturity options per instrument",
     )
-
-    console.print()

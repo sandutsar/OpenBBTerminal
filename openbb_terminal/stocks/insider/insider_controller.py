@@ -1,34 +1,29 @@
 """Insider Controller Module"""
+
 __docformat__ = "numpy"
 
 import argparse
 import configparser
 import logging
-import os
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
-from prompt_toolkit.completion import NestedCompleter
 
-from openbb_terminal import feature_flags as obbff
+from openbb_terminal.core.session.current_user import get_current_user
+from openbb_terminal.custom_prompt_toolkit import NestedCompleter
 from openbb_terminal.decorators import log_start_end
-from openbb_terminal.helper_funcs import (
-    EXPORT_ONLY_RAW_DATA_ALLOWED,
-    check_positive,
-    parse_known_args_and_warn,
-)
+from openbb_terminal.helper_funcs import EXPORT_ONLY_RAW_DATA_ALLOWED, check_positive
 from openbb_terminal.menu import session
 from openbb_terminal.parent_classes import StockBaseController
-from openbb_terminal.rich_config import console
+from openbb_terminal.rich_config import MenuText, console
 from openbb_terminal.stocks.insider import (
     businessinsider_view,
     finviz_view,
+    openinsider_model,
     openinsider_view,
 )
 
 logger = logging.getLogger(__name__)
-
-presets_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), "presets/")
 
 # pylint: disable=,inconsistent-return-statements
 
@@ -70,12 +65,10 @@ class InsiderController(StockBaseController):
         "stats",
     ]
 
-    preset_choices = [
-        preset.split(".")[0]
-        for preset in os.listdir(presets_path)
-        if preset[-4:] == ".ini"
-    ]
+    preset_choices = openinsider_model.get_preset_choices()
+
     PATH = "/stocks/ins/"
+    CHOICES_GENERATION = True
 
     def __init__(
         self,
@@ -83,7 +76,7 @@ class InsiderController(StockBaseController):
         start: str,
         interval: str,
         stock: pd.DataFrame,
-        queue: List[str] = None,
+        queue: Optional[List[str]] = None,
     ):
         """Constructor"""
         super().__init__(queue)
@@ -94,59 +87,51 @@ class InsiderController(StockBaseController):
         self.stock = stock
         self.preset = "whales"
 
-        if session and obbff.USE_PROMPT_TOOLKIT:
-            choices: dict = {c: {} for c in self.controller_choices}
-            choices["view"] = {c: None for c in self.preset_choices}
-            choices["set"] = {c: None for c in self.preset_choices}
+        if session and get_current_user().preferences.USE_PROMPT_TOOLKIT:
+            choices: dict = self.choices_default
+
             self.completer = NestedCompleter.from_nested_dict(choices)
 
     def print_help(self):
         """Print help"""
-        has_ticker_start = "[unvl]" if not self.ticker else ""
-        has_ticker_end = "[/unvl]" if not self.ticker else ""
-
-        help_text = f"""[cmds]
-    view          view available presets
-    set           set one of the available presets[/cmds]
-
-[param]PRESET: [/param]{self.preset}[cmds]
-
-    filter        filter insiders based on preset [src][Open Insider][/src]
-
-
-    load          load a specific stock ticker for analysis[/cmds]
-{has_ticker_start}
-[param]Ticker: [/param]{self.ticker}
-
-    stats         insider stats of the company [src][Open Insider][/src]
-    act           insider activity over time [src][Business Insider][/src]
-    lins          last insider trading of the company [src][Finviz][/src]
-{has_ticker_end}
-
-[info]Latest Insiders[/info] [src][Open Insider][/src][cmds]
-    lcb           latest cluster boys
-    lpsb          latest penny stock buys
-    lit           latest insider trading (all filings)
-    lip           latest insider purchases
-    blip          big latest insider purchases ($25k+)
-    blop          big latest officer purchases ($25k+)
-    blcp          big latest CEO/CFO purchases ($25k+)
-    lis           latest insider sales
-    blis          big latest insider sales ($100k+)
-    blos          big latest officer sales ($100k+)
-    blcs          big latest CEO/CFO sales ($100k+)
-[info]Top Insiders [src][Open Insider][/src][/info]
-    topt          top officer purchases today
-    toppw         top officer purchases past week
-    toppm         top officer purchases past month
-    tipt          top insider purchases today
-    tippw         top insider purchases past week
-    tippm         top insider purchases past month
-    tist          top insider sales today
-    tispw         top insider sales past week
-    tispm         top insider sales past month[/cmds]
-"""
-        console.print(text=help_text, menu="Stocks - Insider Trading")
+        mt = MenuText("stocks/ins/", 80)
+        mt.add_cmd("view")
+        mt.add_cmd("set")
+        mt.add_raw("\n")
+        mt.add_param("_preset", self.preset)
+        mt.add_raw("\n")
+        mt.add_cmd("filter")
+        mt.add_raw("\n")
+        mt.add_info("_last_insiders")
+        mt.add_cmd("lcb")
+        mt.add_cmd("lpsb")
+        mt.add_cmd("lit")
+        mt.add_cmd("lip")
+        mt.add_cmd("blip")
+        mt.add_cmd("blop")
+        mt.add_cmd("blcp")
+        mt.add_cmd("lis")
+        mt.add_cmd("blis")
+        mt.add_cmd("blos")
+        mt.add_cmd("blcs")
+        mt.add_raw("\n")
+        mt.add_info("_top_insiders")
+        mt.add_cmd("topt")
+        mt.add_cmd("toppw")
+        mt.add_cmd("toppm")
+        mt.add_cmd("tipt")
+        mt.add_cmd("tippw")
+        mt.add_cmd("tippm")
+        mt.add_cmd("tist")
+        mt.add_cmd("tispw")
+        mt.add_cmd("tispm")
+        mt.add_raw("\n")
+        mt.add_param("_ticker", self.ticker)
+        mt.add_raw("\n")
+        mt.add_cmd("stats", self.ticker)
+        mt.add_cmd("act", self.ticker)
+        mt.add_cmd("lins", self.ticker)
+        console.print(text=mt.menu_text, menu="Stocks - Insider Trading")
 
     def custom_reset(self):
         """Class specific component of reset command"""
@@ -171,16 +156,17 @@ class InsiderController(StockBaseController):
             help="View specific preset",
             default="",
             choices=self.preset_choices,
+            metavar="Desired preset",
         )
 
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-p")
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
             if ns_parser.preset:
                 preset_filter = configparser.RawConfigParser()
                 preset_filter.optionxform = str  # type: ignore
-                preset_filter.read(presets_path + ns_parser.preset + ".ini")
+                preset_filter.read(self.preset_choices[ns_parser.preset])
 
                 filters_headers = [
                     "General",
@@ -204,9 +190,9 @@ class InsiderController(StockBaseController):
                     console.print("")
 
             else:
-                for preset in self.preset_choices:
+                for preset, path in self.preset_choices.items():
                     with open(
-                        presets_path + preset + ".ini",
+                        path,
                         encoding="utf8",
                     ) as f:
                         description = ""
@@ -214,7 +200,7 @@ class InsiderController(StockBaseController):
                             if line.strip() == "[General]":
                                 break
                             description += line.strip()
-                    console.print(f"\nPRESET: {preset}")
+                    console.print(f"\nPRESET: {preset.strip('.ini')}")
                     console.print(
                         description.split("Description: ")[1].replace("#", "")
                     )
@@ -237,10 +223,11 @@ class InsiderController(StockBaseController):
             default="template",
             help="Filter presets",
             choices=self.preset_choices,
+            metavar="Desired preset",
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-p")
-        ns_parser = parse_known_args_and_warn(parser, other_args)
+        ns_parser = self.parse_known_args_and_warn(parser, other_args)
         if ns_parser:
             self.preset = ns_parser.preset
             console.print("")
@@ -273,16 +260,19 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
             openinsider_view.print_insider_filter(
-                preset_loaded=self.preset,
-                ticker="",
+                preset=self.preset,
+                symbol="",
                 limit=ns_parser.limit,
                 links=ns_parser.urls,
                 export=ns_parser.export,
+                sheet_name=(
+                    " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                ),
             )
 
     @log_start_end(log=logger)
@@ -292,7 +282,7 @@ class InsiderController(StockBaseController):
             add_help=False,
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             prog="stats",
-            description="Print open insider filtered data using selected ticker. [Source: OpenInsider]",
+            description="Open insider filtered data using selected ticker. [Source: OpenInsider]",
         )
         parser.add_argument(
             "-l",
@@ -313,17 +303,20 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
             if self.ticker:
                 openinsider_view.print_insider_filter(
-                    preset_loaded="",
-                    ticker=self.ticker,
+                    preset="",
+                    symbol=self.ticker,
                     limit=ns_parser.limit,
                     links=ns_parser.urls,
                     export=ns_parser.export,
+                    sheet_name=(
+                        " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                    ),
                 )
             else:
                 console.print("Please use `load <ticker>` before.\n")
@@ -348,7 +341,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -376,7 +369,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -404,7 +397,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -432,7 +425,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -460,7 +453,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -488,7 +481,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -516,7 +509,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -544,7 +537,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -572,7 +565,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -600,7 +593,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -628,7 +621,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -656,7 +649,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -684,7 +677,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -712,7 +705,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -740,7 +733,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -768,7 +761,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -796,7 +789,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -824,7 +817,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -852,7 +845,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -880,7 +873,7 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
@@ -897,15 +890,6 @@ class InsiderController(StockBaseController):
             description="""Prints insider activity over time [Source: Business Insider]""",
         )
         parser.add_argument(
-            "-l",
-            "--limit",
-            action="store",
-            dest="limit",
-            type=check_positive,
-            default=10,
-            help="Limit of latest insider activity.",
-        )
-        parser.add_argument(
             "--raw",
             action="store_true",
             default=False,
@@ -914,19 +898,22 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
-            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
+        ns_parser = self.parse_known_args_and_warn(
+            parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED, limit=10
         )
         if ns_parser:
             if self.ticker:
                 businessinsider_view.insider_activity(
-                    stock=self.stock,
-                    ticker=self.ticker,
-                    start=self.start,
+                    data=self.stock,
+                    symbol=self.ticker,
+                    start_date=self.start,
                     interval=self.interval,
-                    num=ns_parser.limit,
+                    limit=ns_parser.limit,
                     raw=ns_parser.raw,
                     export=ns_parser.export,
+                    sheet_name=(
+                        " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                    ),
                 )
             else:
                 console.print("No ticker loaded. First use `load {ticker}`\n")
@@ -953,15 +940,18 @@ class InsiderController(StockBaseController):
         )
         if other_args and "-" not in other_args[0][0]:
             other_args.insert(0, "-l")
-        ns_parser = parse_known_args_and_warn(
+        ns_parser = self.parse_known_args_and_warn(
             parser, other_args, EXPORT_ONLY_RAW_DATA_ALLOWED
         )
         if ns_parser:
             if self.ticker:
                 finviz_view.last_insider_activity(
-                    ticker=self.ticker,
-                    num=ns_parser.limit,
+                    symbol=self.ticker,
+                    limit=ns_parser.limit,
                     export=ns_parser.export,
+                    sheet_name=(
+                        " ".join(ns_parser.sheet_name) if ns_parser.sheet_name else None
+                    ),
                 )
             else:
                 console.print("No ticker loaded. First use `load {ticker}`\n")
